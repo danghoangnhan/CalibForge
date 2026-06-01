@@ -138,7 +138,8 @@ add_executable(calibforge_tests
   tests/test_detect.cpp
   tests/test_remap.cpp
   tests/test_calibrate_rig.cpp
-  tests/test_calibrate_hand_eye.cpp)
+  tests/test_calibrate_hand_eye.cpp
+  tests/test_rig_uncertainty.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
