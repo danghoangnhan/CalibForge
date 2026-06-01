@@ -15,12 +15,43 @@
 
 namespace calibforge {
 
+// Robust loss for outlier-tolerant least squares. Applied with the FastTriggs (PyPose)
+// corrector: a residual BLOCK with squared norm s = ||r_block||^2 has its residual and
+// Jacobian rows scaled by w = sqrt(rho'(s)) (1st-order, GPU-stable; docs/RESEARCH.md
+// Theme 1). rho is parameterized in s, matching Ceres' LossFunction::Evaluate(s).
+enum class RobustKernel { None, Huber, Cauchy };
+
+struct RobustLoss {
+  RobustKernel kernel = RobustKernel::None;
+  double delta = 1.0;  // Huber threshold / Cauchy scale, in the residual-NORM domain
+};
+
+// w = sqrt(rho'(s)), s = ||r_block||^2:
+//   Huber:  rho'(s) = 1 (s <= delta^2) else delta/sqrt(s)
+//   Cauchy: rho'(s) = 1 / (1 + s/delta^2)
+//   None:   1
+inline double robustWeightSqrt(const RobustLoss& loss, double s) {
+  switch (loss.kernel) {
+    case RobustKernel::Huber: {
+      const double d2 = loss.delta * loss.delta;
+      if (s <= d2) return 1.0;
+      return std::sqrt(loss.delta / std::sqrt(s));
+    }
+    case RobustKernel::Cauchy:
+      return 1.0 / std::sqrt(1.0 + s / (loss.delta * loss.delta));
+    case RobustKernel::None:
+    default:
+      return 1.0;
+  }
+}
+
 struct LmOptions {
   int max_iterations = 100;
   double function_tolerance = 1e-12;   // stop when relative cost decrease < this
   double gradient_tolerance = 1e-12;   // stop when ||J^T r|| < this
   double parameter_tolerance = 1e-10;  // stop when ||dx|| < this*(||x||+this)
   double initial_lambda = 1e-3;
+  RobustLoss robust = {};              // default None => plain least squares (unchanged)
 };
 
 struct LmSummary {

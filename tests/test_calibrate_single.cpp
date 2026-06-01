@@ -6,11 +6,17 @@
 
 #include "calibforge/brown_conrady_camera.hpp"
 #include "calibforge/camera_model.hpp"
+#include "calibforge/double_sphere_camera.hpp"
+#include "calibforge/eucm_camera.hpp"
+#include "calibforge/kannala_brandt_camera.hpp"
 #include "calibforge/pinhole_camera.hpp"
 #include "cf_test.hpp"
 #include "sophus/se3.hpp"
 
 using calibforge::BrownConradyCamera;
+using calibforge::DoubleSphereCamera;
+using calibforge::EUCMCamera;
+using calibforge::KannalaBrandtCamera;
 using calibforge::calibrateSingleCamera;
 using calibforge::CameraFactory;
 using calibforge::CameraModel;
@@ -132,4 +138,151 @@ CF_TEST(calibrate_single_recovers_brown_conrady_distortion_from_synthetic_views)
   CF_EXPECT_NEAR(res.intrinsics[6], p1, 1e-3);
   CF_EXPECT_NEAR(res.intrinsics[7], p2, 1e-3);
   CF_EXPECT_NEAR(res.intrinsics[8], k3, 1e-3);
+}
+
+// Same pipeline recovering a Kannala-Brandt fisheye (8 intrinsics). Wide-angle scene
+// (board close, strong tilts) so the equidistant-polynomial terms are well observed;
+// distortion initialized at zero as in real calibration.
+CF_TEST(calibrate_single_recovers_kannala_brandt_from_synthetic_views) {
+  const double fx = 350.0, fy = 350.0, cx = 320.0, cy = 240.0;
+  const double k1 = -0.05, k2 = 0.01, k3 = 0.0, k4 = 0.0;
+  KannalaBrandtCamera gt(fx, fy, cx, cy, k1, k2, k3, k4);
+
+  std::vector<Vec3> board;
+  for (int r = 0; r < 6; ++r)
+    for (int c = 0; c < 6; ++c) board.push_back(Vec3{c * 0.1 - 0.25, r * 0.1 - 0.25, 0.0});
+
+  std::vector<Sophus::SE3d> gt_poses = {
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.25, -0.10, 0.05)), Eigen::Vector3d(-0.05, -0.05, 0.8)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(-0.30, 0.20, -0.10)), Eigen::Vector3d(-0.08, -0.04, 0.7)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.10, 0.35, 0.15)), Eigen::Vector3d(-0.04, -0.08, 0.9)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.20, 0.15, -0.25)), Eigen::Vector3d(-0.10, -0.03, 0.75)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(-0.15, -0.25, 0.20)), Eigen::Vector3d(-0.06, -0.10, 0.85)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.30, -0.20, -0.10)), Eigen::Vector3d(-0.03, -0.05, 0.65)}};
+
+  CameraFactory make_camera = [](const VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<KannalaBrandtCamera>(q[0], q[1], q[2], q[3], q[4], q[5], q[6], q[7]);
+  };
+
+  std::vector<View> views;
+  for (const auto& T : gt_poses) {
+    View v;
+    for (const auto& X : board) {
+      Eigen::Vector3d Xc = T * Eigen::Vector3d(X[0], X[1], X[2]);
+      v.object_points.push_back(X);
+      v.image_points.push_back(gt.project(Vec3{Xc.x(), Xc.y(), Xc.z()}));
+    }
+    views.push_back(v);
+  }
+
+  VectorXd q0(8);
+  q0 << 330.0, 365.0, 315.0, 248.0, 0.0, 0.0, 0.0, 0.0;  // distortion starts at zero
+  std::vector<Sophus::SE3d> poses0;
+  for (const auto& T : gt_poses) poses0.push_back(perturb(T));
+
+  LmOptions opts;
+  opts.max_iterations = 300;
+  SingleCameraResult res = calibrateSingleCamera(views, q0, poses0, make_camera, opts);
+
+  CF_EXPECT_TRUE(res.summary.converged);
+  CF_EXPECT_TRUE(res.summary.final_cost < 1e-6);
+  CF_EXPECT_NEAR(res.intrinsics[0], fx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[1], fy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[2], cx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[3], cy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[4], k1, 1e-3);
+  CF_EXPECT_NEAR(res.intrinsics[5], k2, 1e-3);
+  CF_EXPECT_NEAR(res.intrinsics[6], k3, 1e-3);
+  CF_EXPECT_NEAR(res.intrinsics[7], k4, 1e-3);
+}
+
+// Shared wide-angle scene for the generic fisheye models (board close, strong tilts).
+static void wideFisheyeScene(std::vector<Vec3>& board, std::vector<Sophus::SE3d>& poses) {
+  for (int r = 0; r < 6; ++r)
+    for (int c = 0; c < 6; ++c) board.push_back(Vec3{c * 0.1 - 0.25, r * 0.1 - 0.25, 0.0});
+  poses = {
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.25, -0.10, 0.05)), Eigen::Vector3d(-0.05, -0.05, 0.8)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(-0.30, 0.20, -0.10)), Eigen::Vector3d(-0.08, -0.04, 0.7)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.10, 0.35, 0.15)), Eigen::Vector3d(-0.04, -0.08, 0.9)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.20, 0.15, -0.25)), Eigen::Vector3d(-0.10, -0.03, 0.75)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(-0.15, -0.25, 0.20)), Eigen::Vector3d(-0.06, -0.10, 0.85)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.30, -0.20, -0.10)), Eigen::Vector3d(-0.03, -0.05, 0.65)}};
+}
+
+template <typename Cam>
+static std::vector<View> renderViews(const Cam& gt, const std::vector<Vec3>& board,
+                                     const std::vector<Sophus::SE3d>& poses) {
+  std::vector<View> views;
+  for (const auto& T : poses) {
+    View v;
+    for (const auto& X : board) {
+      Eigen::Vector3d Xc = T * Eigen::Vector3d(X[0], X[1], X[2]);
+      v.object_points.push_back(X);
+      v.image_points.push_back(gt.project(Vec3{Xc.x(), Xc.y(), Xc.z()}));
+    }
+    views.push_back(v);
+  }
+  return views;
+}
+
+// Recover Double-Sphere intrinsics (fx,fy,cx,cy,xi,alpha) from synthetic wide views.
+CF_TEST(calibrate_single_recovers_double_sphere_from_synthetic_views) {
+  const double fx = 320.0, fy = 320.0, cx = 320.0, cy = 240.0, xi = 0.2, alpha = 0.55;
+  DoubleSphereCamera gt(fx, fy, cx, cy, xi, alpha);
+  std::vector<Vec3> board;
+  std::vector<Sophus::SE3d> gt_poses;
+  wideFisheyeScene(board, gt_poses);
+  std::vector<View> views = renderViews(gt, board, gt_poses);
+
+  CameraFactory make_camera = [](const VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<DoubleSphereCamera>(q[0], q[1], q[2], q[3], q[4], q[5]);
+  };
+  VectorXd q0(6);
+  q0 << 310.0, 332.0, 315.0, 246.0, 0.0, 0.5;
+  std::vector<Sophus::SE3d> poses0;
+  for (const auto& T : gt_poses) poses0.push_back(perturb(T));
+
+  LmOptions opts;
+  opts.max_iterations = 500;
+  SingleCameraResult res = calibrateSingleCamera(views, q0, poses0, make_camera, opts);
+
+  CF_EXPECT_TRUE(res.summary.converged);
+  CF_EXPECT_TRUE(res.summary.final_cost < 1e-6);
+  CF_EXPECT_NEAR(res.intrinsics[0], fx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[1], fy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[2], cx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[3], cy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[4], xi, 1e-3);
+  CF_EXPECT_NEAR(res.intrinsics[5], alpha, 1e-3);
+}
+
+// Recover EUCM intrinsics (fx,fy,cx,cy,alpha,beta) from synthetic wide views.
+CF_TEST(calibrate_single_recovers_eucm_from_synthetic_views) {
+  const double fx = 320.0, fy = 320.0, cx = 320.0, cy = 240.0, alpha = 0.6, beta = 1.1;
+  EUCMCamera gt(fx, fy, cx, cy, alpha, beta);
+  std::vector<Vec3> board;
+  std::vector<Sophus::SE3d> gt_poses;
+  wideFisheyeScene(board, gt_poses);
+  std::vector<View> views = renderViews(gt, board, gt_poses);
+
+  CameraFactory make_camera = [](const VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<EUCMCamera>(q[0], q[1], q[2], q[3], q[4], q[5]);
+  };
+  VectorXd q0(6);
+  q0 << 312.0, 330.0, 316.0, 245.0, 0.5, 1.0;
+  std::vector<Sophus::SE3d> poses0;
+  for (const auto& T : gt_poses) poses0.push_back(perturb(T));
+
+  LmOptions opts;
+  opts.max_iterations = 500;
+  SingleCameraResult res = calibrateSingleCamera(views, q0, poses0, make_camera, opts);
+
+  CF_EXPECT_TRUE(res.summary.converged);
+  CF_EXPECT_TRUE(res.summary.final_cost < 1e-6);
+  CF_EXPECT_NEAR(res.intrinsics[0], fx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[1], fy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[2], cx, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[3], cy, 1e-2);
+  CF_EXPECT_NEAR(res.intrinsics[4], alpha, 1e-3);
+  CF_EXPECT_NEAR(res.intrinsics[5], beta, 1e-3);
 }

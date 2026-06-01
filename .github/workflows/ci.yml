@@ -1,0 +1,94 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "v0.*"]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    name: build+test (${{ matrix.cc }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { cc: gcc,   cxx: g++ }
+          - { cc: clang, cxx: clang++ }
+    env:
+      # Cache the FetchContent clones (Eigen + Sophus) outside build/ so a fresh
+      # configure never re-clones gitlab.com / github.com after the first run.
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build ${{ matrix.cc }}
+
+      - name: Cache FetchContent deps (Eigen + Sophus)
+        uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DCMAKE_C_COMPILER=${{ matrix.cc }}
+          -DCMAKE_CXX_COMPILER=${{ matrix.cxx }}
+
+      - name: Build
+        run: cmake --build build -j
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  strict:
+    name: strict warnings (gcc -Werror)
+    runs-on: ubuntu-24.04
+    # Non-blocking until #2-#12 stabilize; promote to a required check before the milestone PR.
+    continue-on-error: true
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+      - name: Configure (strict)
+        run: cmake -S . -B build-strict -G Ninja -DCALIBFORGE_WERROR=ON
+      - name: Build
+        run: cmake --build build-strict -j
+      - name: Test
+        run: ctest --test-dir build-strict --output-on-failure
+
+  config-only:
+    name: host-only config proof (no nvcc)
+    runs-on: ubuntu-24.04
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+      - name: Configure and assert the CUDA path degrades to HOST-ONLY
+        run: |
+          cmake -S . -B build-cfg -G Ninja 2>&1 | tee cfg.log
+          grep -q "configuring HOST-ONLY" cfg.log
+          test ! -e build-cfg/calibforge_arch_probe

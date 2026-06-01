@@ -17,6 +17,15 @@ project(CalibForge
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# --- Strict-warnings switch for the CI `strict` job (host C++ only; SYSTEM deps unaffected) ---
+option(CALIBFORGE_WERROR "Treat warnings as errors (-Wall -Wextra -Wpedantic -Werror)" OFF)
+if(CALIBFORGE_WERROR)
+  add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>
+                      $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
+                      $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
+                      $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
+endif()
+
 # --- The single-source multi-arch matrix (edit here as new Jetson/server GPUs ship) -----
 # sm_72 Xavier · sm_87 Orin (primary edge) · sm_80/90 server (A100/H100) · sm_86/89 desktop/L4
 set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90"
@@ -47,7 +56,11 @@ endif()
 add_library(calibforge_core INTERFACE)
 target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/core/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/solve/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/solve/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/io/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/pipelines/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/detect/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
 # --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
@@ -81,6 +94,29 @@ target_include_directories(calibforge_sophus SYSTEM INTERFACE ${sophus_SOURCE_DI
 target_compile_definitions(calibforge_sophus INTERFACE SOPHUS_USE_BASIC_LOGGING)
 target_link_libraries(calibforge_sophus INTERFACE calibforge_eigen)
 
+# --- OpenCV (Apache-2.0, per docs/DEPENDENCIES.md). OPTIONAL: io/detect real-image interop +
+#     accuracy oracle. Absent on the bare CI runner -> the header-only suite stays green; the
+#     OpenCV-linked tests live in their own gated executable below. ---
+find_package(OpenCV QUIET COMPONENTS core calib3d imgproc)
+if(OpenCV_FOUND)
+  set(CALIBFORGE_HAS_OPENCV ON)
+  message(STATUS "CalibForge: OpenCV ${OpenCV_VERSION} found -> enabling optional OpenCV interop + tests.")
+else()
+  set(CALIBFORGE_HAS_OPENCV OFF)
+  message(STATUS "CalibForge: OpenCV not found -> OpenCV interop/tests SKIPPED (host-only stays green).")
+endif()
+
+# --- NVIDIA VPI (apply/ LDC on Jetson). OPTIONAL + JETSON-ONLY PVA/VIC (CLAUDE.md rule 5).
+#     Off on x86_64/CI: the CPU generateWarpMap() is the parity reference. ---
+find_path(CALIBFORGE_VPI_INCLUDE vpi/LensDistortionModels.h)
+if(CALIBFORGE_VPI_INCLUDE)
+  set(CALIBFORGE_HAS_VPI ON)
+  message(STATUS "CalibForge: VPI SDK found -> apply/ VPI-LDC binding enabled.")
+else()
+  set(CALIBFORGE_HAS_VPI OFF)
+  message(STATUS "CalibForge: VPI SDK not found -> VPI-LDC binding gated off (CPU warp-map only).")
+endif()
+
 # --- Tests (host-only; no CUDA needed). Run: cmake --build build && ctest --test-dir build ---
 enable_testing()
 add_executable(calibforge_tests
@@ -89,9 +125,46 @@ add_executable(calibforge_tests
   tests/test_brown_conrady_camera.cpp
   tests/test_least_squares.cpp
   tests/test_calibrate_single.cpp
-  tests/test_observability.cpp)
+  tests/test_observability.cpp
+  tests/test_problem.cpp
+  tests/test_kannala_brandt_camera.cpp
+  tests/test_double_sphere_camera.cpp
+  tests/test_eucm_camera.cpp
+  tests/test_robust_loss.cpp
+  tests/test_opencv_yaml.cpp
+  tests/test_ros_isaac_emit.cpp
+  tests/test_warp_map.cpp
+  tests/test_calibrate_stereo.cpp
+  tests/test_detect.cpp
+  tests/test_remap.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
 
-message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}). Core math is header-only; CPU tests build host-only.")
+# --- OpenCV-gated tests (built only where OpenCV is installed; cross-check io/detect vs
+#     real OpenCV). Absent on the bare CI runner -> the gate above stays the green signal. ---
+if(CALIBFORGE_HAS_OPENCV)
+  add_executable(calibforge_opencv_tests
+    tests/test_main.cpp
+    tests/test_opencv_gated.cpp)
+  target_link_libraries(calibforge_opencv_tests PRIVATE
+    calibforge_core calibforge_eigen calibforge_sophus ${OpenCV_LIBS})
+  target_include_directories(calibforge_opencv_tests SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_include_directories(calibforge_opencv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+  target_compile_definitions(calibforge_opencv_tests PRIVATE CALIBFORGE_HAS_OPENCV)
+  add_test(NAME calibforge_opencv_tests COMMAND calibforge_opencv_tests)
+endif()
+
+# --- CUDA server-undistort remap (#12). Built only with a CUDA toolkit, across the arch
+#     matrix; linked into the test suite, which guards the parity test on CALIBFORGE_HAS_CUDA. ---
+if(CALIBFORGE_HAS_CUDA)
+  add_library(calibforge_cuda STATIC apply/src/remap_cuda.cu)
+  target_include_directories(calibforge_cuda PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
+  set_target_properties(calibforge_cuda PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  target_link_libraries(calibforge_tests PRIVATE calibforge_cuda)
+  target_compile_definitions(calibforge_tests PRIVATE CALIBFORGE_HAS_CUDA)
+endif()
+
+message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")

@@ -61,6 +61,9 @@ class PinholeCamera : public CameraModel {
   std::size_t numParams() const override { return 4; }
   std::string name() const override { return "pinhole"; }
 
+  // Intrinsic parameters in constructor order (fx, fy, cx, cy) — for io/apply interop.
+  std::array<double, 4> params() const { return {fx_, fy_, cx_, cy_}; }
+
  private:
   double fx_, fy_, cx_, cy_;
 };
