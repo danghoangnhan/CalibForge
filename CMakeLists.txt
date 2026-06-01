@@ -111,7 +111,8 @@ add_executable(calibforge_tests
   tests/test_least_squares.cpp
   tests/test_calibrate_single.cpp
   tests/test_observability.cpp
-  tests/test_problem.cpp)
+  tests/test_problem.cpp
+  tests/test_kannala_brandt_camera.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
