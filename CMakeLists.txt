@@ -59,7 +59,8 @@ target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/solve/include
   ${CMAKE_CURRENT_SOURCE_DIR}/io/include
   ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/pipelines/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/pipelines/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/detect/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
 # --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
@@ -133,9 +134,24 @@ add_executable(calibforge_tests
   tests/test_opencv_yaml.cpp
   tests/test_ros_isaac_emit.cpp
   tests/test_warp_map.cpp
-  tests/test_calibrate_stereo.cpp)
+  tests/test_calibrate_stereo.cpp
+  tests/test_detect.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
+
+# --- OpenCV-gated tests (built only where OpenCV is installed; cross-check io/detect vs
+#     real OpenCV). Absent on the bare CI runner -> the gate above stays the green signal. ---
+if(CALIBFORGE_HAS_OPENCV)
+  add_executable(calibforge_opencv_tests
+    tests/test_main.cpp
+    tests/test_opencv_gated.cpp)
+  target_link_libraries(calibforge_opencv_tests PRIVATE
+    calibforge_core calibforge_eigen calibforge_sophus ${OpenCV_LIBS})
+  target_include_directories(calibforge_opencv_tests SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_include_directories(calibforge_opencv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+  target_compile_definitions(calibforge_opencv_tests PRIVATE CALIBFORGE_HAS_OPENCV)
+  add_test(NAME calibforge_opencv_tests COMMAND calibforge_opencv_tests)
+endif()
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")
