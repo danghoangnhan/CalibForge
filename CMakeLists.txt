@@ -58,7 +58,8 @@ target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/core/include
   ${CMAKE_CURRENT_SOURCE_DIR}/solve/include
   ${CMAKE_CURRENT_SOURCE_DIR}/io/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/pipelines/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
 # --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
@@ -131,7 +132,8 @@ add_executable(calibforge_tests
   tests/test_robust_loss.cpp
   tests/test_opencv_yaml.cpp
   tests/test_ros_isaac_emit.cpp
-  tests/test_warp_map.cpp)
+  tests/test_warp_map.cpp
+  tests/test_calibrate_stereo.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
