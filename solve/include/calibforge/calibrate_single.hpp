@@ -41,6 +41,7 @@ struct SingleCameraResult {
   Eigen::VectorXd intrinsics;
   std::vector<Sophus::SE3d> poses;  // world->camera
   LmSummary summary;
+  Eigen::MatrixXd information;  // J^T J at the solution; feed to assessObservability()
 };
 
 namespace detail {
@@ -181,10 +182,13 @@ inline SingleCameraResult calibrateSingleCamera(
   s.iterations = it;
   s.final_cost = cost;
 
+  evaluate(intr, poses, r, J, true);  // re-linearize at the final solution for the info matrix
+
   SingleCameraResult res;
   res.intrinsics = intr;
   res.poses = poses;
   res.summary = s;
+  res.information = J.transpose() * J;
   return res;
 }
 
