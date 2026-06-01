@@ -135,7 +135,8 @@ add_executable(calibforge_tests
   tests/test_ros_isaac_emit.cpp
   tests/test_warp_map.cpp
   tests/test_calibrate_stereo.cpp
-  tests/test_detect.cpp)
+  tests/test_detect.cpp
+  tests/test_remap.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
@@ -152,6 +153,18 @@ if(CALIBFORGE_HAS_OPENCV)
   target_include_directories(calibforge_opencv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_compile_definitions(calibforge_opencv_tests PRIVATE CALIBFORGE_HAS_OPENCV)
   add_test(NAME calibforge_opencv_tests COMMAND calibforge_opencv_tests)
+endif()
+
+# --- CUDA server-undistort remap (#12). Built only with a CUDA toolkit, across the arch
+#     matrix; linked into the test suite, which guards the parity test on CALIBFORGE_HAS_CUDA. ---
+if(CALIBFORGE_HAS_CUDA)
+  add_library(calibforge_cuda STATIC apply/src/remap_cuda.cu)
+  target_include_directories(calibforge_cuda PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
+  set_target_properties(calibforge_cuda PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  target_link_libraries(calibforge_tests PRIVATE calibforge_cuda)
+  target_compile_definitions(calibforge_tests PRIVATE CALIBFORGE_HAS_CUDA)
 endif()
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")
