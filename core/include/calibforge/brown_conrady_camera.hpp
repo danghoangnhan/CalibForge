@@ -120,6 +120,11 @@ class BrownConradyCamera : public CameraModel {
   std::size_t numParams() const override { return 9; }
   std::string name() const override { return "brown_conrady"; }
 
+  // Intrinsics in constructor order (fx,fy,cx,cy,k1,k2,p1,p2,k3) — for io/apply interop.
+  std::array<double, 9> params() const {
+    return {fx_, fy_, cx_, cy_, k1_, k2_, p1_, p2_, k3_};
+  }
+
  private:
   // Apply distortion to normalized image coords.
   void distort(double x, double y, double& xd, double& yd) const {
