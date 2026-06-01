@@ -2,18 +2,15 @@
 //
 // CalibForge pipeline — single-camera calibration (header-only, CPU).
 //
-// Minimizes reprojection error over [intrinsics ; per-view SE(3) pose] with a
-// manifold-aware Levenberg-Marquardt: intrinsics update Euclidean, poses retract on
-// SE(3) via the right perturbation T <- T * exp(delta). Jacobians are ANALYTIC
-// (docs/RESEARCH.md Theme 4, "analytic on hot paths"):
-//   d(pixel)/d(intrinsics) = CameraModel::projectJacobianWrtParams
-//   d(pixel)/d(pose)       = CameraModel::projectJacobianWrtPoint * [R | -R [X]_x]
-// where [R | -R [X]_x] = d(T*X)/d(delta) for the right perturbation.
+// Re-expressed over the solver-agnostic Problem/ResidualBlock interface (issue #7):
+// intrinsics are one Euclidean parameter block, each view's pose is one SE(3) block,
+// and every observed point is a ReprojectionResidual. A DenseProblem assembles them and
+// the manifold Levenberg-Marquardt solves — intrinsics update Euclidean, poses retract on
+// SE(3) via T <- T*exp(delta). Jacobians are ANALYTIC (docs/RESEARCH.md Theme 4).
 //
 // CPU path: per docs/RESEARCH.md Theme 1, best for a single small calibration.
 
-#include <algorithm>
-#include <cmath>
+#include <array>
 #include <cstddef>
 #include <functional>
 #include <memory>
@@ -21,8 +18,11 @@
 
 #include <Eigen/Dense>
 
-#include "calibforge/camera_model.hpp"   // Vec2, Vec3, CameraModel, Jacobian
-#include "calibforge/least_squares.hpp"  // LmOptions, LmSummary
+#include "calibforge/camera_model.hpp"          // Vec2, Vec3, CameraModel
+#include "calibforge/dense_problem.hpp"          // DenseProblem
+#include "calibforge/least_squares.hpp"          // LmOptions, LmSummary
+#include "calibforge/manifold.hpp"               // EuclideanParam, SE3Param
+#include "calibforge/reprojection_residual.hpp"  // ReprojectionResidual
 #include "sophus/se3.hpp"
 
 namespace calibforge {
@@ -42,17 +42,8 @@ struct SingleCameraResult {
   std::vector<Sophus::SE3d> poses;  // world->camera
   LmSummary summary;
   Eigen::MatrixXd information;  // J^T J at the solution; feed to assessObservability()
+  int num_residuals = 0;        // total residual rows (for parameterUncertainty(), #6)
 };
-
-namespace detail {
-inline Eigen::Matrix3d skew(const Eigen::Vector3d& v) {
-  Eigen::Matrix3d S;
-  S << 0.0, -v.z(), v.y(),
-       v.z(), 0.0, -v.x(),
-       -v.y(), v.x(), 0.0;
-  return S;
-}
-}  // namespace detail
 
 inline SingleCameraResult calibrateSingleCamera(
     const std::vector<View>& views,
@@ -60,135 +51,39 @@ inline SingleCameraResult calibrateSingleCamera(
     const std::vector<Sophus::SE3d>& poses_init,
     const CameraFactory& make_camera,
     const LmOptions& opts = LmOptions{}) {
-  using Eigen::MatrixXd;
-  using Eigen::Vector3d;
-  using Eigen::VectorXd;
-
   const int nin = static_cast<int>(intrinsics_init.size());
   const int nv = static_cast<int>(views.size());
-  int m = 0;
-  for (const auto& v : views) m += 2 * static_cast<int>(v.image_points.size());
-  const int n = nin + 6 * nv;
 
-  VectorXd intr = intrinsics_init;
-  std::vector<Sophus::SE3d> poses = poses_init;
+  // Parameter-block storage (stable addresses for the problem's lifetime):
+  // intrinsics (nin doubles) + one 7-double SE(3) per view.
+  std::vector<double> intr_store(intrinsics_init.data(), intrinsics_init.data() + nin);
+  std::vector<std::array<double, 7>> pose_store(static_cast<std::size_t>(nv));
+  for (int i = 0; i < nv; ++i) SE3Param::store(poses_init[i], pose_store[i].data());
 
-  // Residual (and, when need_jac, analytic Jacobian) at the given state.
-  auto evaluate = [&](const VectorXd& cur_intr, const std::vector<Sophus::SE3d>& cur_poses,
-                      VectorXd& r, MatrixXd& J, bool need_jac) {
-    r.resize(m);
-    if (need_jac) J.setZero(m, n);
-    std::unique_ptr<CameraModel> cam = make_camera(cur_intr);
-    int row = 0;
-    for (int i = 0; i < nv; ++i) {
-      const Sophus::SE3d& T = cur_poses[i];
-      const Eigen::Matrix3d R = T.rotationMatrix();
-      const View& v = views[i];
-      for (std::size_t j = 0; j < v.image_points.size(); ++j) {
-        const Vec3& X = v.object_points[j];
-        const Vector3d Xw(X[0], X[1], X[2]);
-        const Vector3d Xc = T * Xw;
-        const Vec3 pc{Xc.x(), Xc.y(), Xc.z()};
-        const Vec2 px = cam->project(pc);
-        r[row] = px[0] - v.image_points[j][0];
-        r[row + 1] = px[1] - v.image_points[j][1];
+  DenseProblem problem;
+  problem.addParameterBlock(intr_store.data(), std::make_shared<EuclideanParam>(nin));
+  for (int i = 0; i < nv; ++i)
+    problem.addParameterBlock(pose_store[i].data(), std::make_shared<SE3Param>());
 
-        if (need_jac) {
-          const Jacobian Ji = cam->projectJacobianWrtParams(pc);  // 2 x nin
-          for (int c = 0; c < nin; ++c) {
-            J(row, c) = Ji.data[0 * nin + c];
-            J(row + 1, c) = Ji.data[1 * nin + c];
-          }
-          const Jacobian Jp = cam->projectJacobianWrtPoint(pc);  // 2 x 3
-          Eigen::Matrix<double, 2, 3> dpix;
-          dpix << Jp.data[0], Jp.data[1], Jp.data[2],
-                  Jp.data[3], Jp.data[4], Jp.data[5];
-          Eigen::Matrix<double, 3, 6> dXc;  // d(T*X)/d(delta), right perturbation
-          dXc.leftCols<3>() = R;
-          dXc.rightCols<3>() = -R * detail::skew(Xw);
-          const Eigen::Matrix<double, 2, 6> Jpose = dpix * dXc;
-          const int off = nin + 6 * i;
-          for (int a = 0; a < 6; ++a) {
-            J(row, off + a) = Jpose(0, a);
-            J(row + 1, off + a) = Jpose(1, a);
-          }
-        }
-        row += 2;
-      }
+  for (int i = 0; i < nv; ++i) {
+    const View& v = views[i];
+    for (std::size_t j = 0; j < v.image_points.size(); ++j) {
+      problem.addResidualBlock(
+          std::make_unique<ReprojectionResidual>(make_camera, nin, v.object_points[j],
+                                                 v.image_points[j]),
+          {intr_store.data(), pose_store[i].data()});
     }
-  };
-
-  auto retract = [&](const VectorXd& intr_in, const std::vector<Sophus::SE3d>& poses_in,
-                     const VectorXd& dx, VectorXd& intr_out, std::vector<Sophus::SE3d>& poses_out) {
-    intr_out = intr_in + dx.head(nin);
-    poses_out.resize(nv);
-    for (int i = 0; i < nv; ++i)
-      poses_out[i] = poses_in[i] * Sophus::SE3d::exp(Vec6(dx.segment<6>(nin + 6 * i)));
-  };
-
-  LmSummary s;
-  VectorXd r;
-  MatrixXd J;
-  evaluate(intr, poses, r, J, true);
-  double cost = 0.5 * r.squaredNorm();
-  s.initial_cost = cost;
-  double lambda = opts.initial_lambda;
-
-  int it = 0;
-  for (; it < opts.max_iterations; ++it) {
-    const MatrixXd JtJ = J.transpose() * J;
-    const VectorXd g = J.transpose() * r;
-    if (g.norm() < opts.gradient_tolerance) {
-      s.converged = true;
-      break;
-    }
-    bool step_accepted = false;
-    for (int tries = 0; tries < 12; ++tries) {
-      MatrixXd A = JtJ;
-      A.diagonal() += lambda * JtJ.diagonal();
-      const VectorXd dx = A.ldlt().solve(-g);
-
-      VectorXd intr_t;
-      std::vector<Sophus::SE3d> poses_t;
-      retract(intr, poses, dx, intr_t, poses_t);
-      VectorXd r_t;
-      MatrixXd unused;
-      evaluate(intr_t, poses_t, r_t, unused, false);
-      const double cost_t = 0.5 * r_t.squaredNorm();
-
-      if (cost_t < cost) {
-        const double rel = (cost - cost_t) / std::max(cost, 1e-300);
-        const double step_norm = dx.norm();
-        intr = intr_t;
-        poses = poses_t;
-        cost = cost_t;
-        evaluate(intr, poses, r, J, true);  // re-linearize at the accepted point
-        lambda = std::max(lambda * 0.3, 1e-12);
-        step_accepted = true;
-        const double scale = intr.norm() + static_cast<double>(nv) + 1.0;
-        if (rel < opts.function_tolerance) s.converged = true;
-        if (step_norm < opts.parameter_tolerance * (scale + opts.parameter_tolerance))
-          s.converged = true;
-        break;
-      }
-      lambda *= 3.0;
-    }
-    if (s.converged) {
-      ++it;
-      break;
-    }
-    if (!step_accepted) break;
   }
-  s.iterations = it;
-  s.final_cost = cost;
 
-  evaluate(intr, poses, r, J, true);  // re-linearize at the final solution for the info matrix
+  const LmSummary s = problem.solveLm(opts);
 
   SingleCameraResult res;
-  res.intrinsics = intr;
-  res.poses = poses;
+  res.intrinsics = Eigen::Map<const Eigen::VectorXd>(intr_store.data(), nin);
+  res.poses.resize(static_cast<std::size_t>(nv));
+  for (int i = 0; i < nv; ++i) res.poses[i] = SE3Param::load(pose_store[i].data());
   res.summary = s;
-  res.information = J.transpose() * J;
+  res.information = problem.informationMatrix();
+  res.num_residuals = problem.numResiduals();
   return res;
 }
 
