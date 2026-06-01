@@ -50,4 +50,47 @@ target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/solve/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
-message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}). Scaffold only — no library targets yet.")
+# --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
+#     Populate + add the include dir directly (don't run Eigen's own CMake — header-only). ---
+include(FetchContent)
+FetchContent_Declare(eigen
+  GIT_REPOSITORY https://gitlab.com/libeigen/eigen.git
+  GIT_TAG 3.4.0
+  GIT_SHALLOW TRUE)
+FetchContent_GetProperties(eigen)
+if(NOT eigen_POPULATED)
+  message(STATUS "CalibForge: fetching Eigen 3.4.0 (header-only) ...")
+  FetchContent_Populate(eigen)
+endif()
+add_library(calibforge_eigen INTERFACE)
+target_include_directories(calibforge_eigen SYSTEM INTERFACE ${eigen_SOURCE_DIR})
+
+# --- Sophus (header-only SE(3)/SO(3)). Permissive (MIT) per docs/DEPENDENCIES.md.
+#     SOPHUS_USE_BASIC_LOGGING avoids the optional fmt transitive dependency. ---
+FetchContent_Declare(sophus
+  GIT_REPOSITORY https://github.com/strasdat/Sophus.git
+  GIT_TAG 1.22.10
+  GIT_SHALLOW TRUE)
+FetchContent_GetProperties(sophus)
+if(NOT sophus_POPULATED)
+  message(STATUS "CalibForge: fetching Sophus 1.22.10 (header-only) ...")
+  FetchContent_Populate(sophus)
+endif()
+add_library(calibforge_sophus INTERFACE)
+target_include_directories(calibforge_sophus SYSTEM INTERFACE ${sophus_SOURCE_DIR})
+target_compile_definitions(calibforge_sophus INTERFACE SOPHUS_USE_BASIC_LOGGING)
+target_link_libraries(calibforge_sophus INTERFACE calibforge_eigen)
+
+# --- Tests (host-only; no CUDA needed). Run: cmake --build build && ctest --test-dir build ---
+enable_testing()
+add_executable(calibforge_tests
+  tests/test_main.cpp
+  tests/test_pinhole_camera.cpp
+  tests/test_brown_conrady_camera.cpp
+  tests/test_least_squares.cpp
+  tests/test_calibrate_single.cpp)
+target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
+target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+add_test(NAME calibforge_tests COMMAND calibforge_tests)
+
+message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}). Core math is header-only; CPU tests build host-only.")

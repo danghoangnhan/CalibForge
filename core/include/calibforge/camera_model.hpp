@@ -47,6 +47,10 @@ class CameraModel {
   // prototyping new models. Implementations override the analytic version.
   virtual Jacobian projectJacobianWrtParams(const Vec3& point_cam) const = 0;
 
+  // d(pixel)/d(point_cam): 2x3. Combined with d(T*X)/d(pose) this gives the pose
+  // Jacobian for bundle adjustment / calibration.
+  virtual Jacobian projectJacobianWrtPoint(const Vec3& point_cam) const = 0;
+
   virtual std::size_t numParams() const = 0;
   virtual std::string name() const = 0;
 };
