@@ -11,10 +11,14 @@
 #include "cf_test.hpp"
 #include "sophus/se3.hpp"
 
+#include <cmath>
+
 using calibforge::assessObservability;
 using calibforge::CameraFactory;
 using calibforge::CameraModel;
 using calibforge::ObservabilityReport;
+using calibforge::parameterUncertainty;
+using calibforge::ParameterUncertainty;
 using calibforge::PinholeCamera;
 using calibforge::SingleCameraResult;
 using calibforge::Vec2;
@@ -108,4 +112,44 @@ CF_TEST(observability_flags_degenerate_single_frontoparallel_view) {
   std::printf("  [info] degenerate rcond = %.3e (cost=%.2e)\n",
               rep.confidence, res.summary.final_cost);
   CF_EXPECT_TRUE(!rep.observable);  // untrustworthy despite a good data fit
+}
+
+// sigma0^2 = (2*final_cost)/(m-n) and cov = sigma0^2 * H^{-1}: for a diagonal H the
+// per-parameter sigma is sqrt(sigma0^2 / H_ii).
+CF_TEST(parameter_uncertainty_diagonal_matches_reduced_chi_square) {
+  Eigen::MatrixXd H = Eigen::MatrixXd::Zero(2, 2);
+  H(0, 0) = 4.0;
+  H(1, 1) = 100.0;
+  // final_cost=5, m=12, n=2 -> sigma0^2 = 10/10 = 1.
+  ParameterUncertainty u = parameterUncertainty(H, /*final_cost=*/5.0, /*m=*/12, {"a", "b"});
+  CF_EXPECT_NEAR(u.sigma0_sq, 1.0, 1e-12);
+  CF_EXPECT_NEAR(u.sigma[0], 0.5, 1e-12);   // sqrt(1/4)
+  CF_EXPECT_NEAR(u.sigma[1], 0.1, 1e-12);   // sqrt(1/100)
+  CF_EXPECT_TRUE(u.weak_parameters.empty());
+}
+
+// A well-conditioned calibration reports finite per-parameter sigmas and flags nothing weak.
+CF_TEST(parameter_uncertainty_well_conditioned_is_finite) {
+  std::vector<Sophus::SE3d> tilted = {
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.10, -0.05, 0.02)), Eigen::Vector3d(-0.15, -0.15, 1.5)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(-0.20, 0.15, -0.05)), Eigen::Vector3d(-0.20, -0.10, 1.2)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.05, 0.25, 0.10)), Eigen::Vector3d(-0.10, -0.20, 1.8)},
+      {Sophus::SO3d::exp(Eigen::Vector3d(0.15, 0.10, -0.15)), Eigen::Vector3d(-0.25, -0.05, 1.4)}};
+  SingleCameraResult res = runPinholeCalib(tilted);
+  ParameterUncertainty u = parameterUncertainty(res.information, res.summary.final_cost,
+                                                res.num_residuals, {"fx", "fy", "cx", "cy"});
+  for (int i = 0; i < 4; ++i) CF_EXPECT_TRUE(std::isfinite(u.sigma[i]));
+  CF_EXPECT_TRUE(u.weak_parameters.empty());
+}
+
+// A single frontoparallel view cannot separate focal from depth: those parameters get an
+// infinite sigma and are named weak — the precision != accuracy guard, per parameter.
+CF_TEST(parameter_uncertainty_degenerate_view_flags_focal) {
+  std::vector<Sophus::SE3d> degenerate = {
+      {Sophus::SO3d(), Eigen::Vector3d(-0.15, -0.15, 1.5)}};
+  SingleCameraResult res = runPinholeCalib(degenerate);
+  ParameterUncertainty u = parameterUncertainty(res.information, res.summary.final_cost,
+                                                res.num_residuals, {"fx", "fy", "cx", "cy"});
+  CF_EXPECT_TRUE(!u.weak_parameters.empty());
+  CF_EXPECT_TRUE(!std::isfinite(u.sigma[0]) || !std::isfinite(u.sigma[1]));  // focal unobservable
 }
