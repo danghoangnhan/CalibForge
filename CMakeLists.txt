@@ -57,7 +57,8 @@ add_library(calibforge_core INTERFACE)
 target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/core/include
   ${CMAKE_CURRENT_SOURCE_DIR}/solve/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/io/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/io/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
 # --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
@@ -103,6 +104,17 @@ else()
   message(STATUS "CalibForge: OpenCV not found -> OpenCV interop/tests SKIPPED (host-only stays green).")
 endif()
 
+# --- NVIDIA VPI (apply/ LDC on Jetson). OPTIONAL + JETSON-ONLY PVA/VIC (CLAUDE.md rule 5).
+#     Off on x86_64/CI: the CPU generateWarpMap() is the parity reference. ---
+find_path(CALIBFORGE_VPI_INCLUDE vpi/LensDistortionModels.h)
+if(CALIBFORGE_VPI_INCLUDE)
+  set(CALIBFORGE_HAS_VPI ON)
+  message(STATUS "CalibForge: VPI SDK found -> apply/ VPI-LDC binding enabled.")
+else()
+  set(CALIBFORGE_HAS_VPI OFF)
+  message(STATUS "CalibForge: VPI SDK not found -> VPI-LDC binding gated off (CPU warp-map only).")
+endif()
+
 # --- Tests (host-only; no CUDA needed). Run: cmake --build build && ctest --test-dir build ---
 enable_testing()
 add_executable(calibforge_tests
@@ -118,7 +130,8 @@ add_executable(calibforge_tests
   tests/test_eucm_camera.cpp
   tests/test_robust_loss.cpp
   tests/test_opencv_yaml.cpp
-  tests/test_ros_isaac_emit.cpp)
+  tests/test_ros_isaac_emit.cpp
+  tests/test_warp_map.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
