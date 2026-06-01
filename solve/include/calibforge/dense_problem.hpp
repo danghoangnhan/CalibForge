@@ -70,6 +70,13 @@ class DenseProblem : public Problem {
     n_tangent_ = n;
     m_ = m;
 
+    // Robust loss (FastTriggs IRLS): weights are computed per residual block and held
+    // fixed across each inner trial loop, then refreshed at the accepted point.
+    robust_ = opts.robust;
+    robust_active_ = (robust_.kernel != RobustKernel::None);
+    block_weight_.assign(residuals_.size(), 1.0);
+    computeWeights();
+
     Eigen::VectorXd r;
     Eigen::MatrixXd J;
     evaluate(true, r, J);
@@ -110,8 +117,9 @@ class DenseProblem : public Problem {
         if (cost_t < cost) {
           const double rel = (cost - cost_t) / std::max(cost, 1e-300);
           const double step_norm = dx.norm();
-          cost = cost_t;
-          evaluate(true, r, J);  // re-linearize at the accepted point
+          computeWeights();      // IRLS: refresh robust weights at the accepted point
+          evaluate(true, r, J);  // re-linearize (with refreshed weights)
+          cost = 0.5 * r.squaredNorm();  // == cost_t when non-robust (weights all 1)
           lambda = std::max(lambda * 0.3, 1e-12);
           step_accepted = true;
           const double scale = 1.0 + static_cast<double>(n_tangent_);
@@ -173,7 +181,8 @@ class DenseProblem : public Problem {
   void evaluate(bool need_jac, Eigen::VectorXd& r, Eigen::MatrixXd& J) {
     r.resize(m_);
     if (need_jac) J.setZero(m_, n_tangent_);
-    for (auto& res : residuals_) {
+    for (std::size_t bidx = 0; bidx < residuals_.size(); ++bidx) {
+      Res& res = residuals_[bidx];
       const int rd = static_cast<int>(res.block->residualDim());
       std::vector<const double*> ps(res.ids.size());
       for (std::size_t k = 0; k < res.ids.size(); ++k) ps[k] = blocks_[res.ids[k]].ptr;
@@ -190,6 +199,11 @@ class DenseProblem : public Problem {
       }
       res.block->evaluate(ps.data(), &r[res.row], need_jac ? jptrs.data() : nullptr);
 
+      // FastTriggs: scale the block's residual + Jacobian rows by w = sqrt(rho'(s)).
+      const double w = robust_active_ ? block_weight_[bidx] : 1.0;
+      if (robust_active_ && w != 1.0)
+        for (int i = 0; i < rd; ++i) r[res.row + i] *= w;
+
       if (need_jac) {
         for (std::size_t k = 0; k < res.ids.size(); ++k) {
           const Block& b = blocks_[res.ids[k]];
@@ -197,9 +211,27 @@ class DenseProblem : public Problem {
           const int ts = b.param->tangentSize();
           for (int i = 0; i < rd; ++i)
             for (int c = 0; c < ts; ++c)
-              J(res.row + i, b.col + c) = jstore[k][static_cast<std::size_t>(i) * ts + c];
+              J(res.row + i, b.col + c) = w * jstore[k][static_cast<std::size_t>(i) * ts + c];
         }
       }
+    }
+  }
+
+  // Recompute per-residual-block robust weights from the current (unweighted) residuals.
+  void computeWeights() {
+    if (!robust_active_) return;
+    block_weight_.assign(residuals_.size(), 1.0);
+    std::vector<double> rbuf;
+    for (std::size_t bidx = 0; bidx < residuals_.size(); ++bidx) {
+      Res& res = residuals_[bidx];
+      const int rd = static_cast<int>(res.block->residualDim());
+      std::vector<const double*> ps(res.ids.size());
+      for (std::size_t k = 0; k < res.ids.size(); ++k) ps[k] = blocks_[res.ids[k]].ptr;
+      if (static_cast<int>(rbuf.size()) < rd) rbuf.resize(static_cast<std::size_t>(rd));
+      res.block->evaluate(ps.data(), rbuf.data(), nullptr);
+      double s = 0.0;
+      for (int i = 0; i < rd; ++i) s += rbuf[i] * rbuf[i];
+      block_weight_[bidx] = robustWeightSqrt(robust_, s);
     }
   }
 
@@ -209,6 +241,10 @@ class DenseProblem : public Problem {
   Eigen::MatrixXd information_;
   int n_tangent_ = 0;
   int m_ = 0;
+
+  RobustLoss robust_ = {};
+  bool robust_active_ = false;
+  std::vector<double> block_weight_;  // one per residual block (FastTriggs sqrt(rho'(s)))
 };
 
 }  // namespace calibforge

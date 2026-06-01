@@ -114,7 +114,8 @@ add_executable(calibforge_tests
   tests/test_problem.cpp
   tests/test_kannala_brandt_camera.cpp
   tests/test_double_sphere_camera.cpp
-  tests/test_eucm_camera.cpp)
+  tests/test_eucm_camera.cpp
+  tests/test_robust_loss.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
