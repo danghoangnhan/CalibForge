@@ -136,7 +136,8 @@ add_executable(calibforge_tests
   tests/test_warp_map.cpp
   tests/test_calibrate_stereo.cpp
   tests/test_detect.cpp
-  tests/test_remap.cpp)
+  tests/test_remap.cpp
+  tests/test_calibrate_rig.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
