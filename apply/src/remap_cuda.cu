@@ -13,6 +13,7 @@
 
 #include "calibforge/image.hpp"
 #include "calibforge/warp_map.hpp"
+#include "cuda_check.cuh"  // CF_CUDA_CHECK / CF_CUDA_LAST (cuda-samples helper_cuda idiom)
 
 namespace calibforge {
 namespace apply {
@@ -56,25 +57,26 @@ Image8 remapBilinearCuda(const Image8& input, const WarpMap& map) {
   float *d_mx = nullptr, *d_my = nullptr;
   const std::size_t in_bytes = static_cast<std::size_t>(iw) * ih;
   const std::size_t out_bytes = static_cast<std::size_t>(ow) * oh;
-  cudaMalloc(&d_in, in_bytes);
-  cudaMalloc(&d_out, out_bytes);
-  cudaMalloc(&d_mx, mx.size() * sizeof(float));
-  cudaMalloc(&d_my, my.size() * sizeof(float));
-  cudaMemcpy(d_in, input.data.data(), in_bytes, cudaMemcpyHostToDevice);
-  cudaMemcpy(d_mx, mx.data(), mx.size() * sizeof(float), cudaMemcpyHostToDevice);
-  cudaMemcpy(d_my, my.data(), my.size() * sizeof(float), cudaMemcpyHostToDevice);
+  CF_CUDA_CHECK(cudaMalloc(&d_in, in_bytes));
+  CF_CUDA_CHECK(cudaMalloc(&d_out, out_bytes));
+  CF_CUDA_CHECK(cudaMalloc(&d_mx, mx.size() * sizeof(float)));
+  CF_CUDA_CHECK(cudaMalloc(&d_my, my.size() * sizeof(float)));
+  CF_CUDA_CHECK(cudaMemcpy(d_in, input.data.data(), in_bytes, cudaMemcpyHostToDevice));
+  CF_CUDA_CHECK(cudaMemcpy(d_mx, mx.data(), mx.size() * sizeof(float), cudaMemcpyHostToDevice));
+  CF_CUDA_CHECK(cudaMemcpy(d_my, my.data(), my.size() * sizeof(float), cudaMemcpyHostToDevice));
 
   const dim3 block(16, 16);
   const dim3 grid((ow + block.x - 1) / block.x, (oh + block.y - 1) / block.y);
   cfRemapKernel<<<grid, block>>>(d_in, iw, ih, d_mx, d_my, ow, oh, d_out);
-  cudaDeviceSynchronize();
+  CF_CUDA_LAST("cfRemapKernel");                  // getLastCudaError equivalent
+  CF_CUDA_CHECK(cudaDeviceSynchronize());
 
   Image8 out(ow, oh);
-  cudaMemcpy(out.data.data(), d_out, out_bytes, cudaMemcpyDeviceToHost);
-  cudaFree(d_in);
-  cudaFree(d_out);
-  cudaFree(d_mx);
-  cudaFree(d_my);
+  CF_CUDA_CHECK(cudaMemcpy(out.data.data(), d_out, out_bytes, cudaMemcpyDeviceToHost));
+  CF_CUDA_CHECK(cudaFree(d_in));
+  CF_CUDA_CHECK(cudaFree(d_out));
+  CF_CUDA_CHECK(cudaFree(d_mx));
+  CF_CUDA_CHECK(cudaFree(d_my));
   return out;
 }
 
