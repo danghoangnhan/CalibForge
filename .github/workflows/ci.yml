@@ -92,3 +92,24 @@ jobs:
           cmake -S . -B build-cfg -G Ninja 2>&1 | tee cfg.log
           grep -q "configuring HOST-ONLY" cfg.log
           test ! -e build-cfg/calibforge_arch_probe
+
+  python:
+    name: python bindings (pybind11 + pytest)
+    runs-on: ubuntu-24.04
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ python3-dev python3-pip
+      - run: python3 -m pip install --break-system-packages pytest numpy
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+      - name: Configure with Python bindings
+        run: cmake -S . -B build-py -G Ninja -DCALIBFORGE_PYTHON=ON
+      - name: Build the calibforge module
+        run: cmake --build build-py --target calibforge_python -j
+      - name: pytest
+        run: ctest --test-dir build-py -R calibforge_python --output-on-failure

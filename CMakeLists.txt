@@ -148,7 +148,11 @@ add_executable(calibforge_tests
   tests/test_warp_map.cpp
   tests/test_calibrate_stereo.cpp
   tests/test_detect.cpp
-  tests/test_remap.cpp)
+  tests/test_remap.cpp
+  tests/test_calibrate_rig.cpp
+  tests/test_calibrate_hand_eye.cpp
+  tests/test_rig_uncertainty.cpp
+  tests/test_kalibr_camchain.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
@@ -183,6 +187,31 @@ if(CALIBFORGE_HAS_CUDA)
   endif()
   target_link_libraries(calibforge_tests PRIVATE calibforge_cuda)
   target_compile_definitions(calibforge_tests PRIVATE CALIBFORGE_HAS_CUDA)
+endif()
+
+# --- Python bindings (pybind11, BSD-3 per docs/DEPENDENCIES.md). OPTIONAL: off by default so
+#     the bare core build/CI is unaffected. -DCALIBFORGE_PYTHON=ON fetches pybind11 and builds
+#     the 'calibforge' module + a pytest. ---
+option(CALIBFORGE_PYTHON "Build the pybind11 Python bindings" OFF)
+if(CALIBFORGE_PYTHON)
+  find_package(Python3 COMPONENTS Interpreter Development)
+  if(Python3_FOUND)
+    FetchContent_Declare(pybind11
+      GIT_REPOSITORY https://github.com/pybind/pybind11.git
+      GIT_TAG v2.13.6
+      GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(pybind11)  # pybind11 provides pybind11_add_module
+    pybind11_add_module(calibforge_python bindings/python/calibforge_py.cpp)
+    set_target_properties(calibforge_python PROPERTIES OUTPUT_NAME calibforge)
+    target_link_libraries(calibforge_python PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
+    message(STATUS "CalibForge: Python bindings enabled (module 'calibforge').")
+    add_test(NAME calibforge_python
+      COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
+    set_tests_properties(calibforge_python PROPERTIES
+      ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:calibforge_python>")
+  else()
+    message(STATUS "CalibForge: CALIBFORGE_PYTHON=ON but Python3 dev not found -> bindings skipped.")
+  endif()
 endif()
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")
