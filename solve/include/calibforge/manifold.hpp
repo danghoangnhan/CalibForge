@@ -43,6 +43,28 @@ class EuclideanParam : public LocalParameterization {
   int size_;
 };
 
+// SO(3): stored as a unit quaternion [qx,qy,qz,qw], optimized in the 3-DoF tangent.
+// Retraction is the right perturbation R <- R*exp(delta).
+class SO3Param : public LocalParameterization {
+ public:
+  int ambientSize() const override { return 4; }
+  int tangentSize() const override { return 3; }
+
+  static Sophus::SO3d load(const double* x) {
+    Eigen::Quaterniond q(x[3], x[0], x[1], x[2]);  // Eigen ctor order is (w, x, y, z)
+    q.normalize();
+    return Sophus::SO3d(q);
+  }
+  static void store(const Sophus::SO3d& R, double* x) {
+    const Eigen::Quaterniond q = R.unit_quaternion();
+    x[0] = q.x(); x[1] = q.y(); x[2] = q.z(); x[3] = q.w();
+  }
+  void retract(const double* x, const double* delta, double* x_out) const override {
+    const Eigen::Vector3d d(delta[0], delta[1], delta[2]);
+    store(load(x) * Sophus::SO3d::exp(d), x_out);
+  }
+};
+
 // SE(3): stored as [t (3); unit quaternion (qx,qy,qz,qw)], optimized in the 6-DoF
 // tangent [translation; rotation]. Retraction is the right perturbation T <- T*exp(delta).
 class SE3Param : public LocalParameterization {
