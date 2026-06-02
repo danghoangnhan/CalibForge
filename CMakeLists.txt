@@ -32,17 +32,29 @@ set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90"
     CACHE STRING "Default -gencode arch matrix (server + Jetson in one build)")
 
 # --- Detect CUDA; enable the GPU half only if a compiler is actually available ----------
+# When CUDA is present we follow NVIDIA's cuda-samples project template conventions
+# (BSD-3, see docs/DEPENDENCIES.md): find_package(CUDAToolkit), separable compilation,
+# cuda_std_17, -lineinfo (or -G via CALIBFORGE_CUDA_DEBUG), and -Wno-deprecated-gpu-targets.
 include(CheckLanguage)
 check_language(CUDA)
 if(CMAKE_CUDA_COMPILER)
   enable_language(CUDA)
+  find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
+  endif()
+  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+  option(CALIBFORGE_CUDA_DEBUG "Build CUDA with -G device debug (else -lineinfo)" OFF)
+  if(CALIBFORGE_CUDA_DEBUG)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G")
+  else()
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
   endif()
   set(CALIBFORGE_HAS_CUDA ON)
   message(STATUS "CalibForge: CUDA found -> building GPU targets for sm_{${CMAKE_CUDA_ARCHITECTURES}}")
   # Trivial probe TU: proves the arch matrix compiles end-to-end on a CUDA host.
   add_executable(calibforge_arch_probe src/arch_probe.cu)
+  set_target_properties(calibforge_arch_probe PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 else()
   set(CALIBFORGE_HAS_CUDA OFF)
   message(WARNING
@@ -137,6 +149,10 @@ add_executable(calibforge_tests
   tests/test_calibrate_stereo.cpp
   tests/test_detect.cpp
   tests/test_remap.cpp
+  tests/test_calibrate_rig.cpp
+  tests/test_calibrate_hand_eye.cpp
+  tests/test_rig_uncertainty.cpp
+  tests/test_kalibr_camchain.cpp
   tests/test_rolling_shutter.cpp
   tests/test_cam_imu.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
@@ -164,9 +180,40 @@ if(CALIBFORGE_HAS_CUDA)
   target_include_directories(calibforge_cuda PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/include
     ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
-  set_target_properties(calibforge_cuda PROPERTIES CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
+  set_target_properties(calibforge_cuda PROPERTIES
+    CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
+    CUDA_SEPARABLE_COMPILATION ON)
+  target_compile_features(calibforge_cuda PRIVATE cxx_std_17 cuda_std_17)
+  if(TARGET CUDA::cudart)
+    target_link_libraries(calibforge_cuda PRIVATE CUDA::cudart)  # cuda-samples template linkage
+  endif()
   target_link_libraries(calibforge_tests PRIVATE calibforge_cuda)
   target_compile_definitions(calibforge_tests PRIVATE CALIBFORGE_HAS_CUDA)
+endif()
+
+# --- Python bindings (pybind11, BSD-3 per docs/DEPENDENCIES.md). OPTIONAL: off by default so
+#     the bare core build/CI is unaffected. -DCALIBFORGE_PYTHON=ON fetches pybind11 and builds
+#     the 'calibforge' module + a pytest. ---
+option(CALIBFORGE_PYTHON "Build the pybind11 Python bindings" OFF)
+if(CALIBFORGE_PYTHON)
+  find_package(Python3 COMPONENTS Interpreter Development)
+  if(Python3_FOUND)
+    FetchContent_Declare(pybind11
+      GIT_REPOSITORY https://github.com/pybind/pybind11.git
+      GIT_TAG v2.13.6
+      GIT_SHALLOW TRUE)
+    FetchContent_MakeAvailable(pybind11)  # pybind11 provides pybind11_add_module
+    pybind11_add_module(calibforge_python bindings/python/calibforge_py.cpp)
+    set_target_properties(calibforge_python PROPERTIES OUTPUT_NAME calibforge)
+    target_link_libraries(calibforge_python PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
+    message(STATUS "CalibForge: Python bindings enabled (module 'calibforge').")
+    add_test(NAME calibforge_python
+      COMMAND ${Python3_EXECUTABLE} -m pytest -q ${CMAKE_CURRENT_SOURCE_DIR}/tests/python)
+    set_tests_properties(calibforge_python PROPERTIES
+      ENVIRONMENT "PYTHONPATH=$<TARGET_FILE_DIR:calibforge_python>")
+  else()
+    message(STATUS "CalibForge: CALIBFORGE_PYTHON=ON but Python3 dev not found -> bindings skipped.")
+  endif()
 endif()
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")

@@ -31,6 +31,7 @@ Every new third-party dependency must be added to the table below **with its lic
 | **Theseus** | Differentiable optimizer / analytic-Jacobian patterns | MIT | ✅ **vendor/depend** | also a design reference |
 | **LieTorch** | Lie-group autograd | BSD-3 | ⚠️ reference (CUDA build issues) | prefer Sophus/manif/Theseus |
 | **OpenCV** (core/calib3d/imgproc) | Reference / validation; real-image detect + io interop | Apache-2.0 | ✅ **depend (optional)** | `find_package(OpenCV QUIET)` gate; absent on CI → header-only suite stays green; OpenCV-linked tests are gated. Oracle + io interop. |
+| **NVIDIA cuda-samples** | CUDA build/project template + helper_cuda idioms | BSD-3 | ✅ **reference (pattern)** | `apply/` CUDA build follows the cuda-samples template (`find_package(CUDAToolkit)`, separable compilation, `cuda_std_17`, `-lineinfo`, checkCudaErrors-style checks). Idiom adopted; no files vendored. |
 | **Eigen** | Host-side math | MPL-2.0 | ✅ **vendor/depend** | |
 | **pybind11** | Python bindings | BSD-3 | ✅ **vendor/depend** | |
 | **basalt-headers** | DS/EUCM/KB C++ reference | BSD-3 (verify) | ✅ vendor (verify) | implement DS/EUCM against this |
