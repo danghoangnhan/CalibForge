@@ -72,7 +72,8 @@ target_include_directories(calibforge_core INTERFACE
   ${CMAKE_CURRENT_SOURCE_DIR}/io/include
   ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
   ${CMAKE_CURRENT_SOURCE_DIR}/pipelines/include
-  ${CMAKE_CURRENT_SOURCE_DIR}/detect/include)
+  ${CMAKE_CURRENT_SOURCE_DIR}/detect/include
+  ${CMAKE_CURRENT_SOURCE_DIR}/online/include)
 target_compile_features(calibforge_core INTERFACE cxx_std_17)
 
 # --- Eigen (header-only) for the CPU solver. Permissive (MPL-2.0) per docs/DEPENDENCIES.md.
@@ -154,7 +155,8 @@ add_executable(calibforge_tests
   tests/test_rig_uncertainty.cpp
   tests/test_kalibr_camchain.cpp
   tests/test_rolling_shutter.cpp
-  tests/test_cam_imu.cpp)
+  tests/test_cam_imu.cpp
+  tests/test_online_calibration.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
