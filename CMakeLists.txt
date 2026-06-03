@@ -166,7 +166,8 @@ add_executable(calibforge_tests
   tests/test_kalibr_camchain.cpp
   tests/test_rolling_shutter.cpp
   tests/test_cam_imu.cpp
-  tests/test_online_calibration.cpp)
+  tests/test_online_calibration.cpp
+  tests/test_online_extrinsic_tracker.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)

@@ -49,7 +49,8 @@ inline RigResult calibrateRig(
     const std::vector<Sophus::SE3d>& extrinsics_init,           // size N-1, T_ck_c0
     const std::vector<Sophus::SE3d>& poses_init,                // size num_views, world->cam0
     const std::vector<CameraFactory>& make_cameras,             // size N
-    const LmOptions& opts = LmOptions{}) {
+    const LmOptions& opts = LmOptions{},
+    bool intrinsics_fixed = false) {
   const int ncam = static_cast<int>(intrinsics_init.size());
   const int nv = static_cast<int>(views.size());
 
@@ -63,9 +64,11 @@ inline RigResult calibrateRig(
   for (int i = 0; i < nv; ++i) SE3Param::store(poses_init[i], pose[i].data());
 
   DenseProblem problem;
-  for (int c = 0; c < ncam; ++c)
+  for (int c = 0; c < ncam; ++c) {
     problem.addParameterBlock(intr[c].data(),
                               std::make_shared<EuclideanParam>(static_cast<int>(intr[c].size())));
+    if (intrinsics_fixed) problem.setParameterBlockConstant(intr[c].data());
+  }
   for (int k = 0; k < ncam - 1; ++k)
     problem.addParameterBlock(extr[k].data(), std::make_shared<SE3Param>());
   for (int i = 0; i < nv; ++i)
