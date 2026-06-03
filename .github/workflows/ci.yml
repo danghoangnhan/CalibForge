@@ -55,8 +55,7 @@ jobs:
   strict:
     name: strict warnings (gcc -Werror)
     runs-on: ubuntu-24.04
-    # Non-blocking until #2-#12 stabilize; promote to a required check before the milestone PR.
-    continue-on-error: true
+    # Required check as of v0.2 close-out (issues #2-#12 stabilized).
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
@@ -113,3 +112,28 @@ jobs:
         run: cmake --build build-py --target calibforge_python -j
       - name: pytest
         run: ctest --test-dir build-py -R calibforge_python --output-on-failure
+
+  opencv:
+    name: opencv-gated tests (OpenCV interop + ChArUco/AprilGrid)
+    runs-on: ubuntu-24.04
+    env:
+      FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install toolchain + OpenCV (libopencv-dev brings calib3d + aruco)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build g++ libopencv-dev
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.deps-cache
+          key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
+          restore-keys: deps-${{ runner.os }}-
+      - name: Configure with OpenCV
+        run: |
+          cmake -S . -B build-ocv -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo 2>&1 | tee cfg.log
+          grep -q "OpenCV .* found" cfg.log
+      - name: Build the OpenCV-gated tests
+        run: cmake --build build-ocv --target calibforge_opencv_tests -j
+      - name: Run the gated tests (proves ChArUco/AprilGrid end-to-end)
+        run: ctest --test-dir build-ocv -R calibforge_opencv_tests --output-on-failure

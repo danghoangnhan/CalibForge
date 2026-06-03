@@ -109,13 +109,23 @@ target_link_libraries(calibforge_sophus INTERFACE calibforge_eigen)
 
 # --- OpenCV (Apache-2.0, per docs/DEPENDENCIES.md). OPTIONAL: io/detect real-image interop +
 #     accuracy oracle. Absent on the bare CI runner -> the header-only suite stays green; the
-#     OpenCV-linked tests live in their own gated executable below. ---
+#     OpenCV-linked tests live in their own gated executable below. The aruco component is
+#     additionally optional — ChArUco/AprilGrid detection compiles in when it's available
+#     (Ubuntu 24.04 libopencv-dev ships it). ---
 find_package(OpenCV QUIET COMPONENTS core calib3d imgproc)
 if(OpenCV_FOUND)
   set(CALIBFORGE_HAS_OPENCV ON)
-  message(STATUS "CalibForge: OpenCV ${OpenCV_VERSION} found -> enabling optional OpenCV interop + tests.")
+  find_package(OpenCV QUIET COMPONENTS aruco)
+  if(OpenCV_aruco_FOUND OR TARGET opencv_aruco)
+    set(CALIBFORGE_HAS_OPENCV_ARUCO ON)
+    message(STATUS "CalibForge: OpenCV ${OpenCV_VERSION} found (+aruco) -> ChArUco/AprilGrid gated tests built.")
+  else()
+    set(CALIBFORGE_HAS_OPENCV_ARUCO OFF)
+    message(STATUS "CalibForge: OpenCV ${OpenCV_VERSION} found (no aruco) -> ChArUco/AprilGrid wrappers compiled out.")
+  endif()
 else()
   set(CALIBFORGE_HAS_OPENCV OFF)
+  set(CALIBFORGE_HAS_OPENCV_ARUCO OFF)
   message(STATUS "CalibForge: OpenCV not found -> OpenCV interop/tests SKIPPED (host-only stays green).")
 endif()
 
@@ -162,16 +172,21 @@ target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
 
 # --- OpenCV-gated tests (built only where OpenCV is installed; cross-check io/detect vs
-#     real OpenCV). Absent on the bare CI runner -> the gate above stays the green signal. ---
+#     real OpenCV). Absent on the bare CI runner -> the gate above stays the green signal.
+#     The opencv CI job installs libopencv-dev so this executable runs end-to-end. ---
 if(CALIBFORGE_HAS_OPENCV)
   add_executable(calibforge_opencv_tests
     tests/test_main.cpp
-    tests/test_opencv_gated.cpp)
+    tests/test_opencv_gated.cpp
+    tests/test_detect_opencv_charuco_aprilgrid.cpp)
   target_link_libraries(calibforge_opencv_tests PRIVATE
     calibforge_core calibforge_eigen calibforge_sophus ${OpenCV_LIBS})
   target_include_directories(calibforge_opencv_tests SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
   target_include_directories(calibforge_opencv_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
   target_compile_definitions(calibforge_opencv_tests PRIVATE CALIBFORGE_HAS_OPENCV)
+  if(CALIBFORGE_HAS_OPENCV_ARUCO)
+    target_compile_definitions(calibforge_opencv_tests PRIVATE CALIBFORGE_HAS_OPENCV_ARUCO)
+  endif()
   add_test(NAME calibforge_opencv_tests COMMAND calibforge_opencv_tests)
 endif()
 
