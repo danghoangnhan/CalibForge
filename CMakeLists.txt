@@ -168,7 +168,8 @@ add_executable(calibforge_tests
   tests/test_cam_imu.cpp
   tests/test_imu_preintegrator.cpp
   tests/test_imu_preintegration_residual.cpp
-  tests/test_online_calibration.cpp)
+  tests/test_online_calibration.cpp
+  tests/test_determinism.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
