@@ -7,12 +7,12 @@
 // carrying the mechanical extrinsic, then a second fixed joint <name> -> <name>_optical
 // carrying the constant body->optical rotation (z-forward optical frame).
 //
-// ASSUMPTION (UNVERIFIED, docs/RESEARCH.md Theme 5): the exact Perceptor *camera-model /
-// distortion* schema is unconfirmed (the fisheye/ftheta3/rational/plumbob claim was refuted).
-// The FRAME TREE below (base_link root, fixed joints, optical sub-frame) is well-established
-// and emitted with confidence; per-camera intrinsics travel alongside via CameraInfo. The
-// in-URDF encoding of distortion is intentionally omitted here and must be re-confirmed
-// against a real Perceptor calibration before relying on it.
+// Distortion is intentionally *not* embedded in the URDF: per Isaac Perceptor convention the
+// URDF carries only the kinematic frame tree (base_link root, fixed joints, optical sub-frame
+// per camera), and per-camera intrinsics + distortion travel alongside as a companion
+// `CameraInfo` (see io/ros_camera_info.hpp). The frame_id stamped on both files lets the
+// downstream pipeline join them. Linking the two is asserted by the
+// `isaac_urdf_and_camera_info_share_frame_id` integration test.
 
 #include <cstdio>
 #include <sstream>

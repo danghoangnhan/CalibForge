@@ -13,14 +13,20 @@ Turns images into the observations the solver consumes: `View{object_points, ima
   hardening.
 
 - **Optional OpenCV (`detect_opencv.hpp`, gated on `CALIBFORGE_HAS_OPENCV`).** Wraps
-  OpenCV's robust `findChessboardCornersSB` / `cornerSubPix` (and, in future, `cv::aruco`
-  for ChArUco / AprilGrid) for real-image detection. Built/tested only where OpenCV is
-  installed (`calibforge_opencv_tests`); absent on the bare CI runner so the green gate is
-  unaffected. OpenCV is Apache-2.0, optional — see [`../docs/DEPENDENCIES.md`](../docs/DEPENDENCIES.md).
+  OpenCV's robust `findChessboardCornersSB` / `cornerSubPix` for checkerboards, and — when
+  the aruco component is available (gated on `CALIBFORGE_HAS_OPENCV_ARUCO`, default in
+  Ubuntu 24.04's `libopencv-dev`) — `cv::aruco::detectMarkers` +
+  `interpolateCornersCharuco` for **ChArUco** boards and `cv::aruco::detectMarkers` for
+  **AprilGrid** (Kalibr-style independent tag grid, DICT_APRILTAG_36h11). Built/tested
+  only where OpenCV is installed (`calibforge_opencv_tests`); the `opencv` CI job
+  installs `libopencv-dev` and runs them end-to-end. The bare CI runner remains the
+  green-gate signal. OpenCV is Apache-2.0, optional — see
+  [`../docs/DEPENDENCIES.md`](../docs/DEPENDENCIES.md).
 
 - **Targetless (future):** feature tracks for online calibration; BEV photometric error in
   overlapping regions (surround-view); tie-points for UAV blocks. See
   [`../docs/RESEARCH.md`](../docs/RESEARCH.md) Theme 3.
 
-Full from-scratch ChArUco/AprilGrid **marker decoding** (IDs under occlusion/rotation) is
-delegated to the OpenCV path; a hand-rolled clean-render decoder is future work.
+ChArUco / AprilGrid support is therefore via the OpenCV-gated path (issue #8 closed under
+that decision). A hand-rolled from-scratch ChArUco / AprilGrid marker decoder (full ID
+recovery under occlusion / rotation, no OpenCV dependency) remains future work.

@@ -75,3 +75,27 @@ CF_TEST(extrinsic_rotation_roundtrips_through_rpy) {
   Eigen::Matrix3d R_back = rpyToRotation(rpy[0], rpy[1], rpy[2]);
   CF_EXPECT_TRUE((R_back - R).norm() < 1e-9);
 }
+
+// The URDF + CameraInfo emitted for the same camera reference the same frame_id, so a
+// downstream consumer (e.g. Isaac Perceptor) can join the kinematic frame to the intrinsics.
+// This is the design contract documented in isaac_urdf.hpp: distortion lives in CameraInfo,
+// the URDF carries only the frame tree, and the frame_id is what stitches them.
+CF_TEST(isaac_urdf_and_camera_info_share_frame_id) {
+  const std::string name = "front_left";
+
+  RigDescription rig;
+  CameraExtrinsic c;
+  c.name = name;
+  c.T_base_camera = Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(0.0, 0.0, 0.0)),
+                                 Eigen::Vector3d(0.12, 0.0, 0.30));
+  BrownConradyCamera cam(520.0, 520.0, 320.0, 240.0, -0.15, 0.04, 0.001, -0.001, 0.0);
+  c.info = brownConradyToCameraInfo(cam, 640, 480, name + "_optical");
+  rig.cameras.push_back(c);
+
+  const std::string urdf = toIsaacUrdf(rig);
+  const std::string ci_yaml = toCameraInfoYaml(c.info);
+
+  // The optical sub-frame on the URDF must match the frame_id stamped on the CameraInfo.
+  CF_EXPECT_TRUE(contains(urdf, "<link name=\"" + name + "_optical\"/>"));
+  CF_EXPECT_TRUE(contains(ci_yaml, "camera_name: " + name + "_optical"));
+}
