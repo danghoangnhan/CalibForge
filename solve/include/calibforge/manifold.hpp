@@ -20,6 +20,17 @@
 
 namespace calibforge {
 
+// 3x3 skew-symmetric matrix from a 3-vector — small free helper reused by every residual
+// that takes an SO(3) right-perturbation Jacobian (reprojection pose-tangent, cam-IMU gyro,
+// IMU preintegration factor). Kept here so each residual doesn't roll its own static copy.
+inline Eigen::Matrix3d skew3(const Eigen::Vector3d& v) {
+  Eigen::Matrix3d S;
+  S << 0.0, -v.z(), v.y(),
+       v.z(), 0.0, -v.x(),
+       -v.y(), v.x(), 0.0;
+  return S;
+}
+
 class LocalParameterization {
  public:
   virtual ~LocalParameterization() = default;

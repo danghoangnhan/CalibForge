@@ -47,7 +47,7 @@ class CamImuGyroResidual : public ResidualBlock {
                      const Eigen::Vector3d& imu_omega)
       : cam_(cam), tk_(imu_time), wimu_(imu_omega) {}
 
-  ResidualType type() const override { return ResidualType::ImuPreintegration; }
+  ResidualType type() const override { return ResidualType::CamImuGyroInit; }
   std::size_t residualDim() const override { return 3; }
 
   void evaluate(double const* const* params, double* residual,

@@ -20,7 +20,8 @@ enum class ResidualType {
   Reprojection,     // point reprojection (camera model + pose)
   Distortion,       // distortion-parameter residual
   RollingShutter,   // RS readout: reprojection evaluated at the row-specific pose (t_r or line-delay)
-  ImuPreintegration,// on-manifold IMU factor (cam-IMU extrinsics + time offset)
+  CamImuGyroInit,   // cam/IMU rotation-only initialization (gyro <-> camera angular velocity)
+  ImuPreintegration,// on-manifold Forster IMU factor: DeltaR / Deltav / Deltap between nav-states
   Line,             // RS line reprojection via Plucker parameterization (RSL-BA)
   Planar,           // planar / ground constraint
 };

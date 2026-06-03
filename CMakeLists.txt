@@ -166,6 +166,8 @@ add_executable(calibforge_tests
   tests/test_kalibr_camchain.cpp
   tests/test_rolling_shutter.cpp
   tests/test_cam_imu.cpp
+  tests/test_imu_preintegrator.cpp
+  tests/test_imu_preintegration_residual.cpp
   tests/test_online_calibration.cpp
   tests/test_online_extrinsic_tracker.cpp
   tests/test_feature_tracker.cpp)
