@@ -84,6 +84,17 @@ Optional flags:
 
 See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the full cited rationale and [`docs/DESIGN.md`](docs/DESIGN.md) for the vision.
 
+## Documentation
+
+The long-form design / research / dependency / spike docs live in [`docs/`](docs/) and are mirrored on the [GitHub Wiki](https://github.com/danghoangnhan/CalibForge/wiki) for browsability:
+
+- [DESIGN](https://github.com/danghoangnhan/CalibForge/wiki/DESIGN) — vision + engineering spec v0.1 (owner intent).
+- [RESEARCH](https://github.com/danghoangnhan/CalibForge/wiki/RESEARCH) — cited, adversarially-verified mid-2026 research + revised build-vs-borrow stack.
+- [DEPENDENCIES](https://github.com/danghoangnhan/CalibForge/wiki/DEPENDENCIES) — enforceable dependency policy + in-tree status per dep.
+- [SPIKES](https://github.com/danghoangnhan/CalibForge/wiki/SPIKES) — empirical dependency de-risking results + the deferred-to-CUDA-host work.
+
+The repository copy under [`docs/`](docs/) is the canonical source — the wiki is updated from it.
+
 ## License
 
 Open-source & free (permissive — Apache-2.0 intended). See the root `LICENSE`. Vendored dependencies must be permissive (Apache / BSD / MIT / MPL); GPL-family projects are reference-only — re-implement the math, never copy. See [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md).

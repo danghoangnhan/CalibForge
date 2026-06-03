@@ -2,6 +2,8 @@
 
 **What this is.** A citation-backed survey of the open problems and the concrete methods available to implement each component of CalibForge (see [`DESIGN.md`](./DESIGN.md) for the vision). It re-validates the design doc's build-vs-borrow choices as of **2026-06-01** and labels every method by **maturity** and **edge-readiness**.
 
+**Implementation status (v0.5 in progress).** Theme 4's permissive-borrow conclusion (nvTorchCam-style interface, add DS + EUCM ourselves) and Theme 2's "residuals coexist behind one BA cost" architectural claim are both built and FD-validated in tree. Theme 3's differentiator — observability + 6-axis-excitation gating around online recalibration — is implemented for both intrinsics and extrinsics. Theme 1's calibration-regime GPU-vs-CPU benchmark (the single most important number listed in [Open questions](#open-questions--re-check-list)) remains deferred to a CUDA host. See repo root `README.md` for the current capability matrix and [`SPIKES.md`](./SPIKES.md) §D for the deferred work.
+
 **How it was produced.** Five independent deep-research passes (one per theme), each: decompose into ~5–6 search angles → parallel web search → fetch ~20–26 primary sources → extract ~100–128 falsifiable claims → **3-vote adversarial verification** (a claim needs 2/3 refutes to be killed) → synthesize. Per-theme verification counts:
 
 | Theme | Sources | Claims | Verified | Confirmed | Killed |
