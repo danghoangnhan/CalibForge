@@ -2,6 +2,8 @@
 
 Empirical checks of the [`RESEARCH.md`](./RESEARCH.md) borrow decisions, run on the dev host on **2026-06-01**. Goal: don't trust the papers alone — verify the load-bearing claims firsthand, and honestly record what could **not** be verified here.
 
+> **Implementation status (v0.5 in progress).** Everything verified in §A–C below is reflected in the shipped code. §D items remain deferred — the **CPU subset of §D.3 (run-to-run bit-identical CPU determinism)** ships as `tests/test_determinism.cpp`, but the Jetson-vs-server + FP32/bf16 vs FP64 parity it scaffolds, the GPU-vs-CPU calibration-regime benchmark (§D.1), and the Graphite build + VPI LDC Jetson-hardware checks (§D.2/§D.4) all wait on a CUDA / Jetson host. See repo root `README.md` for the current capability matrix.
+
 ## Environment (this host)
 
 | Tool | Status |

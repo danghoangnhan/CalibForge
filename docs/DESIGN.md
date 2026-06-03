@@ -8,6 +8,8 @@
 
 **Status:** Design draft v0.1 · Target: research preview → v1.0 · Owner: Daniel Tu
 
+> **Implementation status (v0.5 in progress):** §12 roadmap rows v0.1 through v0.5 are implemented and tested on a CUDA-less CI matrix (gcc + clang + Werror + OpenCV-gated + python). The v1.0 row — generic per-pixel model, GPU solver back-ends, hardened edge↔server packaging + benchmark suite — is partly stubbed (CPU-side determinism test + capability scaffolding) and otherwise deferred pending a CUDA / Jetson host. See the repo root `README.md` for the current capability matrix and `docs/SPIKES.md` §D for the deferred items.
+
 ---
 
 ## PART 1 — PITCH / VISION (read this first)
@@ -210,14 +212,14 @@ C++ core mirrors this; ROS2 node wraps `online.ExtrinsicTracker`.
 
 ### 12. Roadmap
 
-| Phase | Deliverable |
-|---|---|
-| **v0.1** | Camera-model core + GPU LM (wrapped MegBA) + pinhole/Brown-Conrady single-cam, validated vs OpenCV |
-| **v0.2** | Fisheye (KB) + stereo + VPI LDC export; runs on Orin |
-| **v0.3** | Multi-cam rig + hand-eye; ROS2 node |
-| **v0.4** | Rolling-shutter + cam-IMU (UAV focus); Isaac Sim synthetic validation |
-| **v0.5** | Online/targetless recalibration prototype (UAV + surround-view) |
-| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs |
+| Phase | Deliverable | Status |
+|---|---|---|
+| **v0.1** | Camera-model core + GPU LM (wrapped MegBA) + pinhole/Brown-Conrady single-cam, validated vs OpenCV | ✅ shipped (CPU manifold LM; GPU back-end deferred to v1.0) |
+| **v0.2** | Fisheye (KB) + stereo + VPI LDC export; runs on Orin | ✅ shipped (KB + DS + EUCM + stereo + warp-map; Orin-on-hardware deferred) |
+| **v0.3** | Multi-cam rig + hand-eye; ROS2 node | ✅ shipped (N-rig + hand-eye + ROS2 node + pybind11) |
+| **v0.4** | Rolling-shutter + cam-IMU (UAV focus); Isaac Sim synthetic validation | ✅ shipped (RS readout + cam-IMU rotation init + full Forster preintegration factor; Isaac Sim deferred to hardware) |
+| **v0.5** | Online/targetless recalibration prototype (UAV + surround-view) | ✅ shipped (`OnlineExtrinsicTracker` + `OnlineIntrinsicTracker` behind the observability + 6-axis motion-excitation gate; `FeatureTracker` targetless source; BEV photometric + UAV/surround-rig orchestrators pending) |
+| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs | ⏳ partial — CPU-runnable determinism test + accurate README/CLAUDE.md shipped; generic B-spline model + GPU solver back-ends + CPU-vs-GPU regime benchmark + Jetson↔server FP32/bf16↔FP64 parity test all deferred pending a CUDA / Jetson host |
 
 ### 13. Risks
 - **BA back-end fit:** MegBA is tuned for SfM-scale problems; calibration problems are smaller/differently structured — may need kernel specialization (mitigate: keep solver interface abstract).
