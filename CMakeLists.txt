@@ -171,6 +171,11 @@ add_executable(calibforge_tests
   tests/test_online_calibration.cpp
   tests/test_online_extrinsic_tracker.cpp
   tests/test_feature_tracker.cpp
+  tests/test_triangulate.cpp
+  tests/test_bev_photometric.cpp
+  tests/test_online_uav.cpp
+  tests/test_online_surround_rig.cpp
+  tests/test_generic_bspline_camera.cpp
   tests/test_determinism.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
@@ -237,5 +242,10 @@ if(CALIBFORGE_PYTHON)
     message(STATUS "CalibForge: CALIBFORGE_PYTHON=ON but Python3 dev not found -> bindings skipped.")
   endif()
 endif()
+
+# --- CPU calibration-regime benchmark (#25 / SPIKES.md §D.1 CPU rows). Optional; not part of
+#     the default test build. Run: cmake --build build --target calibforge_bench && ./build/calibforge_bench
+add_executable(calibforge_bench tools/benchmark/calibforge_bench.cpp)
+target_link_libraries(calibforge_bench PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")
