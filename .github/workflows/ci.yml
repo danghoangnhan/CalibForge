@@ -129,9 +129,14 @@ jobs:
           path: ${{ github.workspace }}/.deps-cache
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: deps-${{ runner.os }}-
-      - name: Configure with OpenCV (strict)
+      - name: Configure with OpenCV
+        # NOTE: intentionally NOT -DCALIBFORGE_WERROR=ON. The aruco tests call
+        # cv::aruco::CharucoBoard/GridBoard::create + board->draw, which are deprecated in
+        # newer OpenCV; -Wdeprecated-declarations fires at the call site (SYSTEM includes do
+        # not suppress that) and would break the build if the runner's OpenCV bumps past 4.6.
+        # Re-enable once those wrappers move to the non-deprecated aruco API.
         run: |
-          cmake -S . -B build-ocv -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCALIBFORGE_WERROR=ON 2>&1 | tee cfg.log
+          cmake -S . -B build-ocv -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo 2>&1 | tee cfg.log
           grep -qE "OpenCV [0-9].* found" cfg.log
       - name: Build the OpenCV-gated tests
         run: cmake --build build-ocv --target calibforge_opencv_tests -j
