@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 CalibForge is header-only, but the build needs Eigen + Sophus + (optional) OpenCV. The
 top-level `CMakeLists.txt` `FetchContent`s Eigen 3.4 and Sophus automatically; OpenCV is
 gated and the rest of the suite stays green without it. CUDA is detected when `nvcc` is
-present; the host CPU half (~35 tests) is the always-green signal.
+present; the host CPU half (~109 tests) is the always-green signal.
 
 ## 1. Single-camera intrinsic calibration
 
@@ -75,7 +75,9 @@ StereoResult sres = calibrateStereo(stereo_views, intr_l0, intr_r0, T_r_l_init,
                                     poses0, mk, mk);
 
 #include "calibforge/calibrate_hand_eye.hpp"
-HandEyeResult he = calibrateHandEye(hand_eye_samples, T_init);
+std::vector<HandEyeView> hand_eye_views = ...;   // each: T_base_gripper + (object,image) pairs
+HandEyeResult he = calibrateHandEye(hand_eye_views, X_init /*T_gripper_cam*/,
+                                    Z_init /*T_base_target*/, camera);
 
 #include "calibforge/calibrate_rig.hpp"
 RigResult rig = calibrateRig(rig_views, intr_init_per_cam, extr_init_T_ck_c0,
@@ -98,7 +100,9 @@ not a separate solver. See `tests/test_rolling_shutter.cpp`.
 Rotation init via gyro:
 ```cpp
 #include "calibforge/calibrate_cam_imu.hpp"
-CamImuRotResult ci = calibrateCamImuGyro(cam_omegas, imu_samples, init_R_ic, init_t_d);
+// cam_omega: AngularVelocitySignal; imu_times/imu_omega: the IMU gyro stream.
+CamImuResult ci = calibrateCamImuRotation(cam_omega, imu_times, imu_omega,
+                                          R_ci_init /*camera->IMU*/, t_d_init);
 ```
 
 Full Forster preintegration (bias / gravity / position):
@@ -120,10 +124,13 @@ auto factor = std::make_unique<ImuPreintegrationFactorResidual>(&pi);
 ```cpp
 #include "calibforge/online_calibration.hpp"
 
-OnlineIntrinsicTracker tracker(mk, intr_reference, {"fx","fy","cx","cy"});
+online::OnlineIntrinsicTracker tracker(mk, intr_reference, {"fx","fy","cx","cy"});
 for (const auto& [view, pose] : new_data) tracker.addFrame(view, pose);
 
-Emission e = tracker.tryEmit(/*min_confidence=*/1e-3);
+// confidence is the diagonally-normalized reciprocal condition number of the information
+// matrix: ~1e-6 for a healthy calibration, ~0 for a degenerate one. Set min_confidence near
+// that scale (a too-high bar like 1e-3 silently never emits).
+online::Emission e = tracker.tryEmit(/*min_confidence=*/1e-7);
 if (e.emitted) {
   use_drifted(e.intrinsics);        // pass the gate -> safe to publish
   log("drift = " + std::to_string(e.drift));
@@ -138,11 +145,11 @@ if (e.emitted) {
 ```cpp
 #include "calibforge/online_extrinsic_tracker.hpp"
 
-OnlineExtrinsicTracker rig_tracker(factories_per_cam, intr_reference_per_cam,
-                                   extr_reference_T_ck_c0);
+online::OnlineExtrinsicTracker rig_tracker(factories_per_cam, intr_reference_per_cam,
+                                           extr_reference_T_ck_c0);
 for (const auto& [view, rig_pose] : new_data) rig_tracker.addFrame(view, rig_pose);
 
-ExtrinsicEmission e = rig_tracker.tryEmit(/*min_confidence=*/1e-3);
+online::ExtrinsicEmission e = rig_tracker.tryEmit(/*min_confidence=*/1e-7);
 if (e.refused_for_motion) {
   // 6-axis motion gate refused; the rig hasn't moved on these axes:
   for (const std::string& a : e.unexcited_axes) /* ask for that motion */;
@@ -158,7 +165,7 @@ if (e.refused_for_motion) {
 
 pipelines::OnlineUavOptions opts;
 opts.triangulation_min_track_length = 4;
-opts.emit_min_confidence = 1e-3;
+opts.emit_min_confidence = 1e-7;   // ~1e-6 is a healthy reciprocal-condition score; 1e-3 never emits
 
 pipelines::OnlineUav uav(mk, intr_reference, {"fx","fy","cx","cy"}, opts);
 for (const auto& [image, T_world_cam] : vio_stream) uav.addFrame(image, T_world_cam);
@@ -186,19 +193,23 @@ auto e = orch.tryEmit();
 ```
 
 Internally: coarse-to-fine BEV photometric random search (OpenCalib SurroundCameraCalib math,
-re-implemented) behind the cost-reduction sanity gate + the same 6-axis motion gate as
-`OnlineExtrinsicTracker`.
+re-implemented), then the **observability gate** — the photometric information matrix
+`H = JᵀJ` of the BEV residuals must be observable and clear `opts.min_confidence` before any
+emit (RULE #2). The 6-axis motion gate, overlap count, and cost-reduction ratio are cheap
+pre-filters; on refusal `e.refused_for_observability` / `e.weak_parameters` say why.
 
 ## 10. Apply the calibration
 
 Runtime undistort/rectify path:
 ```cpp
 #include "calibforge/warp_map.hpp"
-WarpMap m = generateWarpMap(camera, target_size, ...);
-Image8 out = remap(in, m);           // CPU reference
+#include "calibforge/remap.hpp"
+// out_K = {fx, fy, cx, cy} of the desired undistorted image.
+apply::WarpMap m = apply::generateWarpMap(camera, {fx, fy, cx, cy}, out_w, out_h);
+Image8 out = apply::remapBilinear(in, m);   // CPU reference
 ```
-Server CUDA path (`apply/remap_cuda.cu`) and Jetson VPI-LDC export
-(`apply/vpi_ldc.hpp`) follow the same `WarpMap` contract.
+Server CUDA path (`apply::remapBilinearCuda`, `apply/src/remap_cuda.cu`) and Jetson VPI-LDC
+export (`apply/vpi_ldc.hpp`) follow the same `WarpMap` contract.
 
 ---
 

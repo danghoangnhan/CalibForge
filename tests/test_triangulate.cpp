@@ -112,3 +112,27 @@ CF_TEST(triangulate_linear_rejects_rank_deficient_zero_baseline) {
       calibforge::detect::triangulateLinear(uvs, cams, T_world_cam, /*cond=*/1e-3);
   CF_EXPECT_TRUE(!r.ok);
 }
+
+CF_TEST(triangulate_linear_rejects_low_parallax_even_when_conditioning_passes) {
+  // A far point seen across a tiny baseline: the depth is essentially unconstrained, but the
+  // reciprocal-condition number alone does NOT catch this. With the conditioning gate set
+  // wide open (1e-12) the geometric parallax gate must still reject the near-parallel rays.
+  PinholeCamera cam(500.0, 500.0, 320.0, 240.0);
+  const Vec3 X_world{0.1, -0.05, 50.0};  // 50 m away
+
+  std::vector<Sophus::SE3d> T_world_cam = {
+      Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(0.0, 0.0, 0.0)),
+      Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(0.01, 0.0, 0.0))};  // 1 cm baseline => ~0.01 deg
+  std::vector<Vec2> uvs;
+  std::vector<const CameraModel*> cams;
+  for (const Sophus::SE3d& T : T_world_cam) {
+    const Eigen::Vector3d Xc =
+        T.inverse() * Eigen::Vector3d(X_world[0], X_world[1], X_world[2]);
+    uvs.push_back(cam.project(Vec3{Xc.x(), Xc.y(), Xc.z()}));
+    cams.push_back(&cam);
+  }
+  const TriangulationResult r = calibforge::detect::triangulateLinear(
+      uvs, cams, T_world_cam, /*cond=*/1e-12, /*min_parallax_rad=*/0.017453292519943295);
+  CF_EXPECT_TRUE(!r.ok);
+  CF_EXPECT_TRUE(r.parallax_rad < 0.017453292519943295);  // below the 1 deg floor
+}

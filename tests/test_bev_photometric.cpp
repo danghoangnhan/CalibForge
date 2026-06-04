@@ -147,6 +147,10 @@ CF_TEST(bev_random_search_reduces_cost_from_perturbed_init) {
   const BevRandomSearchResult r = bevRandomSearchExtrinsics(
       samples, cams, {T_c1_c0_init}, rig_poses, per_frame, opts);
   CF_EXPECT_TRUE(r.overlap_count > 50);
-  CF_EXPECT_TRUE(r.final_cost <= r.initial_cost);
-  CF_EXPECT_TRUE(r.cost_reduction_ratio >= 0.0);
+  // final_cost <= initial_cost and cost_reduction_ratio >= 0 are true BY CONSTRUCTION (best is
+  // only replaced on a strict cost decrease) and prove nothing. The real test is ACCURACY:
+  // the refined extrinsic must be strictly closer to the TRUE T_c1_c0 than the perturbed init.
+  const double err_init = (T_c1_c0_init * T_c1_c0.inverse()).log().norm();
+  const double err_refined = (r.extrinsics[0] * T_c1_c0.inverse()).log().norm();
+  CF_EXPECT_TRUE(err_refined < err_init);
 }

@@ -84,7 +84,63 @@ CF_TEST(online_surround_rig_refuses_degenerate_static_motion) {
   CF_EXPECT_TRUE(e.unexcited_axes.size() == 6);
 }
 
-CF_TEST(online_surround_rig_emits_or_refuses_consistently_with_excitation) {
+namespace {
+
+// Build a well-overlapped 2-camera surround scenario (near-nadir, heavy ground co-visibility)
+// with the reference extrinsic slightly off the truth. Returns the orchestrator inputs.
+struct SurroundScene {
+  std::vector<Image8> store;
+  std::vector<std::vector<const Image8*>> per_frame;
+  std::vector<Sophus::SE3d> poses;
+  Sophus::SE3d T_c1_c0_true;
+  Sophus::SE3d T_c1_c0_ref;
+};
+
+SurroundScene makeOverlappingScene(const PinholeCamera& cam) {
+  SurroundScene s;
+  s.T_c1_c0_true = Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(-0.15, 0.0, 0.0));
+  s.T_c1_c0_ref = s.T_c1_c0_true * Sophus::SE3d::exp(
+      (Eigen::Matrix<double, 6, 1>() << 0.02, 0.01, 0.0, 0.005, 0.005, 0.0).finished());
+  s.poses = {
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.5, -0.1, -0.1)),
+                   Eigen::Vector3d(0.0, 0.0, 2.0)),
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.7, 0.1, 0.1)),
+                   Eigen::Vector3d(0.3, 0.2, 2.2)),
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.4, -0.12, 0.12)),
+                   Eigen::Vector3d(-0.2, 0.3, 1.9)),
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.65, 0.13, -0.13)),
+                   Eigen::Vector3d(0.25, -0.2, 2.1))};
+  s.store.reserve(s.poses.size() * 2);
+  for (const Sophus::SE3d& T_c0_w : s.poses) {
+    s.store.push_back(makeGroundImage(cam, T_c0_w, 320, 240));
+    s.store.push_back(makeGroundImage(cam, s.T_c1_c0_true * T_c0_w, 320, 240));
+    s.per_frame.push_back({&s.store[s.store.size() - 2], &s.store[s.store.size() - 1]});
+  }
+  return s;
+}
+
+OnlineSurroundRigOptions overlappingOpts() {
+  OnlineSurroundRigOptions opts;
+  opts.bev_grid.x_min = -2.0; opts.bev_grid.x_max = 2.0;
+  opts.bev_grid.y_min = -2.0; opts.bev_grid.y_max = 2.0;
+  opts.bev_grid.step = 0.1;
+  opts.search.rot_scales = {0.02, 0.008, 0.003};
+  opts.search.trans_scales = {0.03, 0.01, 0.004};
+  opts.search.attempts_per_level = 96;
+  opts.min_cost_reduction = 0.001;
+  opts.min_overlap_pairs = 50;
+  return opts;
+}
+
+}  // namespace
+
+CF_TEST(online_surround_rig_emits_behind_observability_gate) {
+  // The estimate must clear the OBSERVABILITY gate before emission (RULE #2): on a
+  // well-overlapped, excited window the photometric information matrix is full-rank and
+  // well-conditioned, so the orchestrator emits with a finite confidence and no weak
+  // directions. NOTE: we deliberately do NOT assert the refined extrinsic is closer to truth
+  // — the coarse BEV photometric minimum is biased (precision != accuracy), which is exactly
+  // why the gate scores confidence rather than trusting the low cost.
   PinholeCamera cam(300.0, 300.0, 160.0, 120.0);
   Eigen::VectorXd intr(4);
   intr << 300.0, 300.0, 160.0, 120.0;
@@ -92,58 +148,81 @@ CF_TEST(online_surround_rig_emits_or_refuses_consistently_with_excitation) {
     return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
   };
 
-  // True extrinsic; reference (initial) is slightly off.
-  const Sophus::SE3d T_c1_c0_true(Sophus::SO3d(), Eigen::Vector3d(-0.3, 0.0, 0.0));
-  const Sophus::SE3d T_c1_c0_ref =
-      T_c1_c0_true * Sophus::SE3d::exp((Eigen::Matrix<double, 6, 1>() << 0.02, 0.01, 0.0,
-                                                                        0.0, 0.0, 0.0)
-                                            .finished());
+  const SurroundScene s = makeOverlappingScene(cam);
+  OnlineSurroundRigOptions opts = overlappingOpts();
+  opts.min_confidence = 1e-6;  // the documented healthy floor (observability.hpp)
 
-  // 4 rig poses with excitation in all 3 world translation axes AND all 3 rotation axes
-  // (each axis-range > 0.15, well above the default 0.10 motion gate threshold).
-  std::vector<Sophus::SE3d> poses = {
-      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.1, -0.1, -0.1)),
-                   Eigen::Vector3d(0.0, 0.0, 1.5)),
-      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.3, 0.1, 0.1)),
-                   Eigen::Vector3d(0.3, 0.2, 1.7)),
-      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.0, -0.12, 0.12)),
-                   Eigen::Vector3d(-0.2, 0.3, 1.4)),
-      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(1.25, 0.13, -0.13)),
-                   Eigen::Vector3d(0.25, -0.2, 1.65))};
-
-  // Render per-pose images for each camera at TRUE extrinsics (the photometric "ground
-  // truth" the search should walk toward).
-  std::vector<Image8> store;
-  store.reserve(poses.size() * 2);
-  std::vector<std::vector<const Image8*>> per_frame;
-  for (const Sophus::SE3d& T_c0_w : poses) {
-    store.push_back(makeGroundImage(cam, T_c0_w, 160, 120));
-    store.push_back(makeGroundImage(cam, T_c1_c0_true * T_c0_w, 160, 120));
-    per_frame.push_back({&store[store.size() - 2], &store[store.size() - 1]});
-  }
-
-  OnlineSurroundRigOptions opts;
-  opts.bev_grid.x_min = -1.0; opts.bev_grid.x_max = 1.0;
-  opts.bev_grid.y_min = 0.5;  opts.bev_grid.y_max = 2.5;
-  opts.bev_grid.step = 0.1;
-  opts.search.rot_scales = {0.01, 0.003};
-  opts.search.trans_scales = {0.02, 0.005};
-  opts.search.attempts_per_level = 64;
-  opts.min_cost_reduction = 0.001;   // accept any non-trivial reduction in this small test
-  opts.min_overlap_pairs = 20;
-
-  OnlineSurroundRig orch({mk, mk}, {intr, intr}, {T_c1_c0_ref}, opts);
-  for (std::size_t i = 0; i < poses.size(); ++i) orch.addFrame(per_frame[i], poses[i]);
+  OnlineSurroundRig orch({mk, mk}, {intr, intr}, {s.T_c1_c0_ref}, opts);
+  for (std::size_t i = 0; i < s.poses.size(); ++i) orch.addFrame(s.per_frame[i], s.poses[i]);
   const SurroundRigEmission e = orch.tryEmit();
+
   CF_EXPECT_TRUE(!e.refused_for_motion);
-  // Either emit with a cost reduction OR refuse for-no-reduction (random search can fail
-  // to improve in some seeds). On emit, we verify the orchestrator surfaced refined
-  // extrinsics + drift accounting.
-  if (e.emitted) {
-    CF_EXPECT_TRUE(e.extrinsics.size() == 1);
-    CF_EXPECT_TRUE(e.cost_reduction >= opts.min_cost_reduction);
-    CF_EXPECT_TRUE(e.drift >= 0.0);
-  } else {
-    CF_EXPECT_TRUE(e.refused_for_no_reduction || e.refused_for_no_signal);
-  }
+  CF_EXPECT_TRUE(e.overlap_count >= opts.min_overlap_pairs);
+  CF_EXPECT_TRUE(e.emitted);
+  CF_EXPECT_TRUE(e.observable);
+  CF_EXPECT_TRUE(e.confidence >= opts.min_confidence);
+  CF_EXPECT_TRUE(e.weak_parameters.empty());
+  CF_EXPECT_TRUE(e.extrinsics.size() == 1);
+  CF_EXPECT_TRUE(e.drift >= 0.0);
+}
+
+CF_TEST(online_surround_rig_refuses_when_confidence_below_threshold) {
+  // Same well-conditioned data, but an unreachable min_confidence: the orchestrator must
+  // REFUSE for observability (never emit when the estimate cannot clear the required
+  // confidence) and surface the weak directions — RULE #2, precision != accuracy.
+  PinholeCamera cam(300.0, 300.0, 160.0, 120.0);
+  Eigen::VectorXd intr(4);
+  intr << 300.0, 300.0, 160.0, 120.0;
+  CameraFactory mk = [](const Eigen::VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
+  };
+
+  const SurroundScene s = makeOverlappingScene(cam);
+  OnlineSurroundRigOptions opts = overlappingOpts();
+  opts.min_confidence = 10.0;  // > 1 (rcond is in [0,1]) => never satisfiable
+
+  OnlineSurroundRig orch({mk, mk}, {intr, intr}, {s.T_c1_c0_ref}, opts);
+  for (std::size_t i = 0; i < s.poses.size(); ++i) orch.addFrame(s.per_frame[i], s.poses[i]);
+  const SurroundRigEmission e = orch.tryEmit();
+
+  CF_EXPECT_TRUE(!e.emitted);
+  CF_EXPECT_TRUE(e.refused_for_observability);
+  CF_EXPECT_TRUE(e.observable);   // the matrix is full-rank (rcond > min_reciprocal_condition)...
+  CF_EXPECT_TRUE(e.confidence > 0.0);
+  CF_EXPECT_TRUE(e.confidence < opts.min_confidence);  // ...but below the required confidence
+}
+
+CF_TEST(online_surround_rig_partial_degeneracy_flags_only_rotation_axes) {
+  // Translation excited on all 3 axes, rotation held fixed: the per-axis motion gate must flag
+  // exactly the 3 rotation axes (not all 6, not the translations) — exercising the per-axis
+  // range logic rather than the trivial all-static case.
+  PinholeCamera cam(300.0, 300.0, 160.0, 120.0);
+  Eigen::VectorXd intr(4);
+  intr << 300.0, 300.0, 160.0, 120.0;
+  CameraFactory mk = [](const Eigen::VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
+  };
+
+  const Sophus::SO3d R = Sophus::SO3d::exp(Eigen::Vector3d(1.2, 0.0, 0.0));  // fixed rotation
+  std::vector<Sophus::SE3d> poses = {
+      Sophus::SE3d(R, Eigen::Vector3d(0.0, 0.0, 1.5)),
+      Sophus::SE3d(R, Eigen::Vector3d(0.3, 0.0, 1.5)),
+      Sophus::SE3d(R, Eigen::Vector3d(0.0, 0.3, 1.5)),
+      Sophus::SE3d(R, Eigen::Vector3d(0.0, 0.0, 1.8))};  // all trans ranges 0.3 > 0.10
+  const Sophus::SE3d T_c1_c0(Sophus::SO3d(), Eigen::Vector3d(-0.3, 0.0, 0.0));
+  Image8 im0 = makeGroundImage(cam, poses[0], 160, 120);
+  Image8 im1 = makeGroundImage(cam, T_c1_c0 * poses[0], 160, 120);
+  std::vector<const Image8*> frame_imgs = {&im0, &im1};
+
+  OnlineSurroundRig orch({mk, mk}, {intr, intr}, {T_c1_c0});
+  for (const Sophus::SE3d& p : poses) orch.addFrame(frame_imgs, p);
+  const SurroundRigEmission e = orch.tryEmit();
+
+  CF_EXPECT_TRUE(e.refused_for_motion);
+  CF_EXPECT_TRUE(!e.emitted);
+  CF_EXPECT_TRUE(e.unexcited_axes.size() == 3);
+  int rot = 0;
+  for (const std::string& a : e.unexcited_axes)
+    if (a == "rot_x" || a == "rot_y" || a == "rot_z") ++rot;
+  CF_EXPECT_TRUE(rot == 3);
 }

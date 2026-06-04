@@ -14,11 +14,13 @@
 // (RULE #2 — never silently emit ill-conditioned params).
 //
 // UAV-tuned defaults (overridable):
-//   - 6-axis motion-excitation is INHERENT for free-flying UAVs (yaw + bank + climb + lateral
-//     all routinely excited within seconds), but we still enforce it at the tracker. For a
-//     hovering UAV the gate will correctly refuse.
+//   - There is no separate motion-excitation check on this intrinsic path (unlike the
+//     surround rig). Instead, a degenerate window (e.g. a hovering UAV, or low-parallax
+//     forward flight) yields a rank-deficient information matrix, and the observability/
+//     confidence gate inside OnlineIntrinsicTracker correctly REFUSES it.
 //   - Triangulation min track length = 4 frames (UAV translational baselines are short per
-//     frame; longer tracks = better conditioning).
+//     frame; longer tracks = better conditioning) plus a parallax-angle floor so near-parallel
+//     rays (the dominant forward-flight failure mode) are dropped before they bias intrinsics.
 
 #include <cstddef>
 #include <memory>
@@ -42,7 +44,12 @@ struct OnlineUavOptions {
   detect::FeatureTrackerOptions tracker;
   int triangulation_min_track_length = 4;
   double triangulation_condition_threshold = 1e-5;
-  double emit_min_confidence = 1e-4;
+  double triangulation_min_parallax_rad = 0.017453292519943295;  // 1.0 deg; reject weak depth
+  // Minimum observability confidence (reciprocal condition number of the diagonally-normalized
+  // information matrix) required to emit. A HEALTHY calibration scores ~1e-6 and a degenerate
+  // one ~0 (see solve/observability.hpp:41-44), so this threshold must live near 1e-6 — the
+  // previous 1e-4 default sat ~100x above the healthy regime and silently NEVER emitted.
+  double emit_min_confidence = 1e-7;
   ObservabilityOptions obs_opts{};
   LmOptions lm_opts{};
 };
@@ -88,7 +95,7 @@ class OnlineUav {
     const std::unique_ptr<CameraModel> cam = make_camera_(intr_ref_);
     const std::vector<detect::TriangulatedTrack> tt = detect::triangulateTracks(
         tracker_.tracks(), cam.get(), poses_, opts_.triangulation_min_track_length,
-        opts_.triangulation_condition_threshold);
+        opts_.triangulation_condition_threshold, opts_.triangulation_min_parallax_rad);
     if (tt.empty()) return e;
 
     const std::vector<View> views =
@@ -100,7 +107,9 @@ class OnlineUav {
     intrinsic_.reset();
     for (std::size_t f = 0; f < views.size(); ++f) {
       if (views[f].object_points.empty()) continue;
-      intrinsic_.addFrame(views[f], poses_[f]);
+      // poses_ are T_world_cam (triangulate's convention); ReprojectionResidual inside the
+      // intrinsic tracker wants T_cam_world (Xc = T*Xw), so invert at this boundary.
+      intrinsic_.addFrame(views[f], poses_[f].inverse());
     }
     return intrinsic_.tryEmit(opts_.emit_min_confidence, opts_.obs_opts, opts_.lm_opts);
   }

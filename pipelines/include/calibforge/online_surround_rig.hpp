@@ -6,11 +6,17 @@
 //
 //   per-frame {rig_pose, per-camera images}
 //     -> bevRandomSearchExtrinsics (coarse-to-fine BEV photometric random search)
-//     -> apply two gates (RULE #2):
-//          * cost-reduction sanity (BEV overlap cost must DROP meaningfully)
-//          * 6-axis rig-pose motion-excitation (mirror of OnlineExtrinsicTracker's gate)
-//     -> on pass: emit refined extrinsics + per-camera drift vs reference
-//     -> on fail: refuse + name the failing gate (cost-stagnant or unexcited axes)
+//     -> gate before emit (RULE #2):
+//          * cheap PRE-FILTERS: 6-axis rig-pose motion-excitation + overlap coverage + the BEV
+//            cost must drop meaningfully (guards against random-walk emission)
+//          * the OBSERVABILITY gate (the real RULE #2 guard): build the photometric information
+//            matrix H = J^T J of the BEV agreement residuals over the 6*(N-1) extrinsic tangent
+//            (bevInformationMatrix) and run assessObservability()/parameterUncertainty() on it —
+//            emit ONLY when H is observable and its reciprocal condition clears min_confidence.
+//            A low photometric cost alone does NOT mean accurate extrinsics (precision != accuracy).
+//     -> on pass: emit refined extrinsics + confidence + per-camera drift vs reference
+//     -> on fail: refuse + name the failing gate (motion / no-signal / no-reduction /
+//        ill-conditioned) + the weak/unobservable extrinsic directions
 //
 // The random-search baseline (OpenCalib SurroundCameraCalib, math RE-IMPLEMENTED) is the
 // front-end here; LM refinement on photometric residuals would come later. Random search is
@@ -26,6 +32,7 @@
 #include "calibforge/bev_photometric.hpp"
 #include "calibforge/calibrate_single.hpp"   // CameraFactory
 #include "calibforge/image.hpp"
+#include "calibforge/observability.hpp"      // assessObservability, parameterUncertainty (RULE #2)
 #include "calibforge/online_extrinsic_tracker.hpp"  // MotionExcitationOptions, ExtrinsicEmission semantics
 #include "sophus/se3.hpp"
 
@@ -36,11 +43,20 @@ struct OnlineSurroundRigOptions {
   detect::BevGridOptions bev_grid;
   detect::BevRandomSearchOptions search;
   online::MotionExcitationOptions motion;
+  ObservabilityOptions obs_opts{};
+  // The observability gate threshold: emit only when the photometric information matrix's
+  // reciprocal condition number clears this. A healthy estimate scores ~1e-6 (see
+  // solve/observability.hpp:41-44); this is the ACCURACY guarantee (RULE #2).
+  double min_confidence = 1e-6;
+  // Finite-difference step (extrinsic SE3 tangent) used to build the photometric information
+  // matrix; small enough for accuracy, large enough to clear bilinear-sampling quantization.
+  double fd_step = 1e-3;
+  // --- The two below are cheap PRE-FILTERS, not the accuracy guarantee (that is the
+  //     observability gate above). They reject obvious random-walk / no-signal windows early. ---
   // Cost reduction must clear this fraction (e.g. 0.05 = 5% drop in mean squared intensity
-  // diff over the BEV overlap zones) — guards against silent random-walk emission.
+  // diff over the BEV overlap zones).
   double min_cost_reduction = 0.05;
-  // Minimum number of overlap pairs sampled by the BEV grid across the window. Below this
-  // the random search has no signal to work with; refuse the emit.
+  // Minimum number of overlap pairs sampled by the BEV grid across the window.
   int min_overlap_pairs = 200;
 };
 
@@ -52,9 +68,13 @@ struct SurroundRigEmission {
   double cost_reduction = 0.0;
   int overlap_count = 0;
   double drift = 0.0;                     // sum_k ||Log(extr_new[k] * extr_ref[k]^-1)||
+  double confidence = 0.0;               // observability reciprocal condition number [0,1]
+  bool observable = false;               // photometric information matrix full-rank + conditioned
+  std::vector<std::string> weak_parameters;     // weak/unobservable extrinsic directions
   bool refused_for_motion = false;
   bool refused_for_no_signal = false;
   bool refused_for_no_reduction = false;
+  bool refused_for_observability = false;       // FIM gate refused (ill-conditioned extrinsics)
   std::vector<std::string> unexcited_axes;
 };
 
@@ -84,7 +104,21 @@ class OnlineSurroundRig {
     SurroundRigEmission e;
     if (frames_.empty()) return e;
 
-    // Motion gate FIRST (free, refuses cheaply on a degenerate window).
+    // Input-size validation: refuse (rather than read out of bounds) on inconsistent
+    // constructor / addFrame arguments.
+    const std::size_t N = make_.size();
+    if (N < 2 || intr_ref_.size() != N || extr_ref_.size() + 1 != N) {
+      e.refused_for_no_signal = true;
+      return e;
+    }
+    for (const std::vector<const Image8*>& imgs : frames_) {
+      if (imgs.size() != N) {
+        e.refused_for_no_signal = true;
+        return e;
+      }
+    }
+
+    // Motion-excitation PRE-FILTER first (free, refuses cheaply on a degenerate window).
     const std::vector<std::string> unexcited = checkMotionExcitation(opts_.motion);
     if (!unexcited.empty()) {
       e.refused_for_motion = true;
@@ -96,9 +130,9 @@ class OnlineSurroundRig {
     // photometric search; intrinsic recal is a separate path).
     std::vector<std::unique_ptr<CameraModel>> cam_storage;
     std::vector<const CameraModel*> cams;
-    cam_storage.reserve(make_.size());
-    cams.reserve(make_.size());
-    for (std::size_t c = 0; c < make_.size(); ++c) {
+    cam_storage.reserve(N);
+    cams.reserve(N);
+    for (std::size_t c = 0; c < N; ++c) {
       cam_storage.push_back(make_[c](intr_ref_[c]));
       cams.push_back(cam_storage.back().get());
     }
@@ -113,12 +147,37 @@ class OnlineSurroundRig {
     e.cost_reduction = r.cost_reduction_ratio;
     e.overlap_count = r.overlap_count;
 
+    // Coverage + cost-reduction PRE-FILTERS (cheap; not the accuracy guarantee).
     if (r.overlap_count < opts_.min_overlap_pairs) {
       e.refused_for_no_signal = true;
       return e;
     }
     if (r.cost_reduction_ratio < opts_.min_cost_reduction) {
       e.refused_for_no_reduction = true;
+      return e;
+    }
+
+    // OBSERVABILITY GATE (RULE #2): a low photometric cost does NOT mean the extrinsics are
+    // accurate. Build the photometric information matrix at the refined extrinsics and require
+    // it to be observable AND clear min_confidence before emitting. Surface the weak /
+    // unobservable directions either way.
+    const detect::BevInformation info = detect::bevInformationMatrix(
+        samples, cams, r.extrinsics, poses_, frames_, opts_.fd_step);
+    std::vector<std::string> extr_names;
+    extr_names.reserve(6 * (N - 1));
+    for (std::size_t k = 1; k < N; ++k) {
+      const std::string base = "extr_" + std::to_string(k);
+      for (const char* a : {"_tx", "_ty", "_tz", "_rx", "_ry", "_rz"})
+        extr_names.push_back(base + a);
+    }
+    const ObservabilityReport rep = assessObservability(info.H, opts_.obs_opts);
+    const ParameterUncertainty unc = parameterUncertainty(
+        info.H, 0.5 * info.residual_ssd, info.num_residuals, extr_names, opts_.obs_opts);
+    e.confidence = rep.confidence;
+    e.observable = rep.observable;
+    e.weak_parameters = unc.weak_parameters;
+    if (!(rep.observable && rep.confidence >= opts_.min_confidence)) {
+      e.refused_for_observability = true;
       return e;
     }
 
