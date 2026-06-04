@@ -54,6 +54,15 @@ out of parameter blocks + residual blocks, then call `solveLm(LmOptions)`.
 - `DenseProblem` ([`dense_problem.hpp`](../solve/include/calibforge/dense_problem.hpp)) is
   the assembler / LM driver. It supports `EuclideanParam` and `SE3Param` / `SO3Param`
   manifolds, FastTriggs robust losses, and emits an information matrix at the solution.
+- `solveLm(LmOptions, SolverBackend)` selects the per-iteration dense linear solver. The
+  default `CpuCeres` keeps the host Eigen LDLT path; `GpuCuda`
+  ([`cuda_linear_solver.hpp`](../solve/include/calibforge/cuda_linear_solver.hpp)) offloads the
+  damped normal-equations solve `(JᵀJ + λ·diag(JᵀJ)) dx = −Jᵀr` to the GPU (cuBLAS SYRK/GEMV +
+  cuSOLVER dense Cholesky) when built with CUDA, and transparently falls back to the host path
+  otherwise (`cudaSolverAvailable()` mirrors the build). Analytic Jacobians stay host-assembled
+  (rule 4). **Rule 1: the GPU is not automatically faster — it wins only past a measured
+  crossover (~8 views / `n_tangent`≈52 on an RTX 5090; see [`BENCHMARKS.md`](./BENCHMARKS.md)),
+  so CPU stays the default for small single calibrations.**
 
 Built-in residuals:
 
@@ -158,14 +167,16 @@ vs the reference, and `weak_parameters` (named directions the gate flagged).
 | What | When built |
 |---|---|
 | `calibforge_core` (header-only INTERFACE) | always |
-| `calibforge_tests` (~113 cases host-only) | always (host-only, no CUDA needed) |
+| `calibforge_tests` (~114 cases host-only; 122 with CUDA) | always (host-only, no CUDA needed) |
 | `calibforge_opencv_tests` | when OpenCV is found |
-| `calibforge_cuda` + `calibforge_arch_probe` (multi-arch matrix) | when `nvcc` is found |
+| `calibforge_cuda` (CUDA undistort remap + native dense LM solver) + `calibforge_arch_probe` | when `nvcc` is found |
 | `calibforge_python` | with `-DCALIBFORGE_PYTHON=ON` |
-| `calibforge_bench` (CPU regime benchmark, see `tools/benchmark/`) | always |
+| `calibforge_bench` (CPU regime + CPU-vs-GPU solver rows when CUDA is present) | always |
 
-Default arch matrix when CUDA is available: `sm_72;80;86;87;89;90` (Jetson + server +
-desktop in one build — CLAUDE.md rule 6).
+Default arch matrix when CUDA is available: `sm_72;80;86;87;89;90` **plus `90-virtual`** (Jetson
++ server + desktop in one build — CLAUDE.md rule 6). The trailing `90-virtual` embeds `compute_90`
+PTX so the fatbin JIT-forwards onto archs newer than the toolkit knows (e.g. `sm_120` / Blackwell
+on a CUDA 12.0 host); validated firsthand on an RTX 5090 — see [`SPIKES.md` §E](./SPIKES.md).
 
 ---
 

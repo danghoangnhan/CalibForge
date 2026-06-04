@@ -131,7 +131,7 @@
 
 ## Consolidated recommendation — revised build-vs-borrow stack
 
-> **License decision: CalibForge is Apache-2.0** (open-source & free, permissive, patent grant). GPL-family code (Kalibr, MVIS/OpenVINS, Ctrl-VIO, DeepLM) is **reference-only — read the math, re-implement; do not vendor.** Permissive borrows (nvTorchCam, PyPose, CV-CUDA = Apache-2.0; iKalibr, OpenCalib, Sophus, manif, Ceres, LieTorch = BSD/MIT) may be vendored/depended-on with attribution.
+> **License decision: CalibForge is Apache-2.0** (open-source & free, permissive, patent grant). GPL-family code (MVIS/OpenVINS, Ctrl-VIO, DeepLM) is **reference-only — read the math, re-implement; do not vendor.** Reuse is *also* gated by **form** (re-audited 2026-06-04): even permissively-licensed deps must be re-implemented if they can't link into the edge C++ binary — **Kalibr** (BSD-3, *not* GPL, but a ROS app + GPL-transitive SuiteSparse), **iKalibr** (BSD/Apache, ROS), **nvTorchCam/PyPose/Theseus/Kornia** (Apache/MIT, PyTorch), **OpenCalib** (Apache, CLI tools), **puzzlepaint** (BSD, Qt GUI). The reuse-**as-is** borrows are the C++ building blocks: Sophus/manif (MIT), Ceres/GTSAM (BSD), Graphite (MIT) / MegBA (Apache) GPU solvers, CV-CUDA (Apache), basalt-headers (BSD), Eigen (MPL-2.0). See [`DEPENDENCIES.md`](./DEPENDENCIES.md).
 
 | Layer | Pick | Why |
 |---|---|---|
@@ -140,7 +140,7 @@
 | **Lie-group / manifold** | **Sophus / manif** (C++) + **Theseus** analytic-Jacobian patterns | Permissive, mature; avoid LieTorch (CUDA build issues) |
 | **Apply / runtime** | **VPI LDC** on Jetson (PVA/VIC) **+ CUDA/CV-CUDA fallback on server** | PVA/VIC are Jetson-only |
 | **io / interop** | OpenCV / ROS / Kalibr / COLMAP **+ emit Isaac Perceptor URDF** | Drop-in ingestion by the edge stack |
-| **RS / cam-IMU residuals** | borrow **iKalibr** (BSD-3) continuous-time formulation; residuals compose into the unified BA cost | iKalibr permissive; OpenVINS/Kalibr/MVIS GPL = reference-only |
+| **RS / cam-IMU residuals** | **re-implement iKalibr** (BSD-3, ROS) continuous-time formulation; residuals compose into the unified BA cost | iKalibr permissive but ROS-form → re-implement; OpenVINS/MVIS GPL, Kalibr BSD-but-ROS+GPL-transitive = reference-only |
 | **Online / targetless** | **OpenCalib SurroundCameraCalib** (Apache-2.0) baseline **+ observability-gated confidence engine (BUILD — the IP)** | The open gap = the differentiator |
 
 ### Top risks → mitigations
