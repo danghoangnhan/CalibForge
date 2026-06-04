@@ -258,8 +258,11 @@ SolveOutcome runRig(int n_views, int n_cams, int board_rows, int board_cols,
 // Single-camera reprojection problem assembled directly on DenseProblem, solved with the chosen
 // backend. Isolates the SOLVER (the linear algebra the GPU back-end changes) on identical input,
 // so the CPU-vs-GPU comparison is apples-to-apples. n_tangent = 4 + 6*n_views grows with views.
-SolveOutcome solveDenseSingle(int n_views, int board_rows, int board_cols, SolverBackend backend,
-                              std::uint64_t seed) {
+// [[maybe_unused]]: only called from the CALIBFORGE_HAS_CUDA CPU-vs-GPU section below, so on a
+// host-only build (no nvcc) it is unused — without this, -Werror=unused-function breaks the strict
+// CI job. Kept compiled (not #ifdef'd out) so the host build still type-checks it.
+[[maybe_unused]] SolveOutcome solveDenseSingle(int n_views, int board_rows, int board_cols,
+                                               SolverBackend backend, std::uint64_t seed) {
   PinholeCamera gt(500.0, 500.0, 320.0, 240.0);
   const std::vector<Vec3> board = makeBoard(board_rows, board_cols, 0.1);
   const std::vector<Sophus::SE3d> gt_poses = makeRandomPoses(n_views, seed);
