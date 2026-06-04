@@ -13,7 +13,9 @@
 
 #include "calibforge/calibrate_single.hpp"
 #include "calibforge/feature_tracker.hpp"
+#include "calibforge/image.hpp"
 #include "calibforge/online_calibration.hpp"
+#include "calibforge/online_uav.hpp"
 #include "calibforge/pinhole_camera.hpp"
 #include "calibforge/triangulate.hpp"
 #include "cf_test.hpp"
@@ -21,6 +23,7 @@
 
 using calibforge::CameraFactory;
 using calibforge::CameraModel;
+using calibforge::Image8;
 using calibforge::PinholeCamera;
 using calibforge::Vec2;
 using calibforge::Vec3;
@@ -30,6 +33,8 @@ using calibforge::detect::FeatureTrack;
 using calibforge::detect::TriangulatedTrack;
 using calibforge::online::Emission;
 using calibforge::online::OnlineIntrinsicTracker;
+using calibforge::pipelines::OnlineUav;
+using calibforge::pipelines::OnlineUavOptions;
 
 CF_TEST(online_uav_triangulate_pack_recovers_intrinsics_via_gated_emission) {
   // Synth: a single pinhole camera flying over a "world" of landmarks. The orchestrator's
@@ -43,7 +48,7 @@ CF_TEST(online_uav_triangulate_pack_recovers_intrinsics_via_gated_emission) {
     return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
   };
 
-  // 20 landmarks spread over an area in front of the rig.
+  // 25 landmarks (5x5 grid) spread over an area in front of the rig.
   std::vector<Vec3> Xs;
   for (int i = -2; i <= 2; ++i)
     for (int j = -2; j <= 2; ++j)
@@ -87,9 +92,12 @@ CF_TEST(online_uav_triangulate_pack_recovers_intrinsics_via_gated_emission) {
   OnlineIntrinsicTracker tracker(make, intr_ref, {"fx", "fy", "cx", "cy"});
   for (std::size_t f = 0; f < views.size(); ++f) {
     if (views[f].object_points.empty()) continue;
-    tracker.addFrame(views[f], poses[f]);
+    // ReprojectionResidual wants T_cam_world (Xc = T*Xw); poses[] are T_world_cam.
+    tracker.addFrame(views[f], poses[f].inverse());
   }
-  const Emission e = tracker.tryEmit(/*min_confidence=*/1e-6);
+  // Use the SHIPPED OnlineUav default threshold, not a hand-picked one — this is what the
+  // orchestrator actually passes, and it catches a mis-tuned default that never emits.
+  const Emission e = tracker.tryEmit(OnlineUavOptions{}.emit_min_confidence);
   CF_EXPECT_TRUE(e.emitted);
   // Recovered intrinsics close to GT.
   CF_EXPECT_NEAR(e.intrinsics[0], fx, 0.5);
@@ -97,4 +105,28 @@ CF_TEST(online_uav_triangulate_pack_recovers_intrinsics_via_gated_emission) {
   CF_EXPECT_NEAR(e.intrinsics[2], cx, 0.5);
   CF_EXPECT_NEAR(e.intrinsics[3], cy, 0.5);
   CF_EXPECT_TRUE(e.drift > 0.0);  // moved away from intr_ref
+}
+
+CF_TEST(online_uav_orchestrator_refuses_hovering_window) {
+  // Drive the REAL OnlineUav orchestrator (addFrame(image, pose) -> FeatureTracker ->
+  // triangulate -> gated emit) rather than the hand-wired glue above. A hovering UAV (all
+  // poses identical) has ZERO triangulation parallax, so no valid landmark survives the gate
+  // and the orchestrator must REFUSE (emitted == false) — never silently emit (RULE #2). The
+  // image-based feature tracker itself is covered by test_feature_tracker.cpp.
+  CameraFactory make = [](const Eigen::VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
+  };
+  Eigen::VectorXd intr_ref(4);
+  intr_ref << 500.0, 500.0, 320.0, 240.0;
+
+  OnlineUav uav(make, intr_ref, {"fx", "fy", "cx", "cy"});
+  CF_EXPECT_TRUE(!uav.tryEmit().emitted);  // empty window -> refuse
+
+  const Sophus::SE3d hover(Sophus::SO3d(), Eigen::Vector3d(0.0, 0.0, 0.0));
+  for (int f = 0; f < 4; ++f) {
+    Image8 blank(64, 48, 0);
+    uav.addFrame(blank, hover);  // no motion => no parallax
+  }
+  CF_EXPECT_TRUE(uav.windowSize() == 4);
+  CF_EXPECT_TRUE(!uav.tryEmit().emitted);  // zero parallax -> no landmarks -> gate refuses
 }

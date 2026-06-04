@@ -105,32 +105,34 @@ inline BevAgreementResult bevAgreementCost(
   const int N = static_cast<int>(cameras.size());
   if (N < 2) return res;
 
+  // Per-sample scratch, sized to N and reused across samples (the charter targets N-rig /
+  // fleet, so the buffers must scale with N — a fixed 16-wide array silently truncated and,
+  // worse, the pair loops below read past it for N>16).
+  std::vector<double> intens(static_cast<std::size_t>(N), 0.0);
+  std::vector<unsigned char> seen(static_cast<std::size_t>(N), 0u);
   for (const BevSample& s : samples) {
-    // Per-sample, gather intensity from each camera that sees it. A small fixed array keeps
-    // the inner loop cache-friendly.
-    std::array<double, 16> intens{};
-    std::array<bool, 16> seen{};
+    std::fill(seen.begin(), seen.end(), 0u);
     int count = 0;
-    for (int k = 0; k < N && k < 16; ++k) {
+    for (int k = 0; k < N; ++k) {
       const Sophus::SE3d T_ck_w = T_ck_c0_with_identity_first[k] * T_c0_w;
       double u = 0.0, v = 0.0;
       if (!projectGroundSample(s, T_ck_w, *cameras[k], images[k]->width, images[k]->height,
                                u, v))
         continue;
-      intens[k] = images[k]->bilinear(u, v);
-      seen[k] = true;
+      intens[static_cast<std::size_t>(k)] = images[k]->bilinear(u, v);
+      seen[static_cast<std::size_t>(k)] = 1u;
       ++count;
     }
     if (count < std::max(2, min_overlap + 1)) continue;
 
-    // Accumulate squared differences over every ordered camera pair that both saw the
+    // Accumulate squared differences over every unordered camera pair that both saw the
     // sample. The pair count grows as O(count^2); for typical 4-6 surround rigs this is
     // bounded (<=15 pairs / sample).
     for (int a = 0; a < N; ++a) {
-      if (!seen[a]) continue;
+      if (!seen[static_cast<std::size_t>(a)]) continue;
       for (int b = a + 1; b < N; ++b) {
-        if (!seen[b]) continue;
-        const double d = intens[a] - intens[b];
+        if (!seen[static_cast<std::size_t>(b)]) continue;
+        const double d = intens[static_cast<std::size_t>(a)] - intens[static_cast<std::size_t>(b)];
         res.cost += d * d;
         ++res.overlap_count;
       }
@@ -149,6 +151,11 @@ struct BevRandomSearchOptions {
   std::vector<double> trans_scales = {0.05, 0.02, 0.005}; // metres   (SE3 tangent trans part)
   int attempts_per_level = 64;
   std::uint64_t seed = 0xCA1BF09Eu;
+  // Reject any trial whose overlap coverage drops below this fraction of the INITIAL overlap.
+  // Minimizing a per-pair MEAN over a variable support set otherwise rewards pruning
+  // high-residual pairs (a smaller, smoother overlap has a lower mean without being more
+  // accurate); this floor keeps the comparison on a comparable amount of evidence.
+  double min_overlap_fraction = 0.9;
 };
 
 struct BevRandomSearchResult {
@@ -198,7 +205,11 @@ inline BevRandomSearchResult bevRandomSearchExtrinsics(
   std::vector<Sophus::SE3d> best = extrinsics_init;
   BevAgreementResult best_r = evalAvg(best);
   out.initial_cost = best_r.mean_sq_diff;
-  out.overlap_count = best_r.overlap_count;
+  const int initial_overlap = best_r.overlap_count;
+  // Coverage floor: a winning trial must keep at least this many overlap pairs so the search
+  // cannot game the per-pair mean by shrinking the support set (see min_overlap_fraction).
+  const int overlap_floor =
+      static_cast<int>(std::floor(opts.min_overlap_fraction * initial_overlap));
 
   std::mt19937_64 rng(opts.seed);
   std::normal_distribution<double> nrm(0.0, 1.0);
@@ -215,9 +226,11 @@ inline BevRandomSearchResult bevRandomSearchExtrinsics(
         T = T * Sophus::SE3d::exp(dx);
       }
       const BevAgreementResult r = evalAvg(trial);
-      // Only accept when the perturbed extrinsics ALSO have valid overlap (random walks
-      // can push a camera off the ground plane).
-      if (r.overlap_count > 0 && r.mean_sq_diff < best_r.mean_sq_diff) {
+      // Accept only when the perturbed extrinsics keep comparable overlap coverage (random
+      // walks can push a camera off the ground plane, and shrinking overlap can lower the
+      // per-pair mean without improving accuracy — see overlap_floor).
+      if (r.overlap_count >= overlap_floor && r.overlap_count > 0 &&
+          r.mean_sq_diff < best_r.mean_sq_diff) {
         best = std::move(trial);
         best_r = r;
       }
@@ -226,6 +239,7 @@ inline BevRandomSearchResult bevRandomSearchExtrinsics(
 
   out.extrinsics = std::move(best);
   out.final_cost = best_r.mean_sq_diff;
+  out.overlap_count = best_r.overlap_count;  // FINAL coverage of the emitted extrinsics
   if (out.initial_cost > 1e-12)
     out.cost_reduction_ratio = (out.initial_cost - out.final_cost) / out.initial_cost;
   return out;

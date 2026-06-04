@@ -35,6 +35,7 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -52,8 +53,11 @@ struct GenericBSplineGrid {
   int image_w = 640;
   int image_h = 480;
   // Margin (in pixels) of the FIRST/LAST control point relative to the image border.
-  // Negative margin extends the grid OUTSIDE the image so the cubic B-spline support
-  // window covers the image corners cleanly. Default of step/2 mirrors Schöps' setup.
+  // Negative margin extends the grid OUTSIDE the image so the cubic B-spline 4x4 support
+  // window covers the image corners cleanly. NOTE: the default 0.0 places the outer control
+  // points ON the image border, so the corners are NOT fully inside the support window;
+  // pixels there fall back to clamped boundary extrapolation (see rayAtPixel). Set
+  // margin = -step/2 (Schöps' setup) for clean corner coverage.
   double margin = 0.0;
 };
 
@@ -101,9 +105,10 @@ class GenericBSplineCamera : public CameraModel {
       throw std::invalid_argument(
           "GenericBSplineCamera grid must be at least 4x4 (cubic B-spline support window)");
     }
-    // Default to identity ray field: control point (i, j) = (0, 0, 1). This makes
-    // unproject() return (0, 0, 1) everywhere and project() trivially place every point
-    // at the image center.
+    // Default to identity ray field: every control point = (0, 0, 1), so unproject() returns
+    // (0, 0, 1) everywhere. With a constant field, project()'s Gauss-Newton Jacobian is
+    // singular and cannot refine, so it returns its (unconverged) pinhole-style initial guess;
+    // populate the grid via fitFromParametricCamera() before relying on project().
     for (int j = 0; j < grid.ny; ++j)
       for (int i = 0; i < grid.nx; ++i) params_[static_cast<std::size_t>(3 * (i * grid.ny + j)) + 2] = 1.0;
     step_x_ = (grid.image_w - 1.0 - 2.0 * grid.margin) / (grid.nx - 1);
@@ -120,11 +125,13 @@ class GenericBSplineCamera : public CameraModel {
     params_ = p;
   }
 
-  // Fit a generic grid to a parametric camera by sampling its unproject at each control
-  // grid position. Each control point stores the unprojected ray (camera frame, unit length).
-  // The resulting B-spline interpolation matches the parametric model exactly at the
-  // control points and approximates it elsewhere — useful as an initial guess for online
-  // generic-model recalibration.
+  // Fit a generic grid to a parametric camera by sampling its unproject at each control grid
+  // position and storing that ray directly as the control point. NOTE: a uniform cubic
+  // B-spline is APPROXIMATING, not interpolating — the evaluated field at control (i, j) is
+  // the 1/6, 4/6, 1/6 blend of (i, j) with its neighbours, so the fitted model approximates
+  // the source EVERYWHERE (it does not reproduce it exactly even at the control points). This
+  // is fine as an initial guess for online generic-model recalibration; solve the de Boor
+  // interpolation system instead if exact control-point reproduction is ever required.
   void fitFromParametricCamera(const CameraModel& source) {
     for (int j = 0; j < grid_.ny; ++j) {
       const double v = grid_.margin + j * step_y_;
@@ -152,22 +159,27 @@ class GenericBSplineCamera : public CameraModel {
   }
 
   Vec2 project(const Vec3& point_cam) const override {
+    const auto kNaN = std::numeric_limits<double>::quiet_NaN();
     // Target unit direction.
     const double n = std::sqrt(point_cam[0] * point_cam[0] + point_cam[1] * point_cam[1]
                               + point_cam[2] * point_cam[2]);
-    if (n < 1e-12) return Vec2{grid_.image_w * 0.5, grid_.image_h * 0.5};
+    if (n < 1e-12) return Vec2{kNaN, kNaN};  // a zero vector has no direction => not projectable
     const Vec3 d_target{point_cam[0] / n, point_cam[1] / n, point_cam[2] / n};
+    // A forward-facing generic ray field cannot project a point that is not in front of it;
+    // signal failure instead of clamping z and returning a diverged guess.
+    if (d_target[2] <= 0.0) return Vec2{kNaN, kNaN};
 
     // Initial guess: pinhole-style projection using the image-center control point as the
     // approximate principal point and step_*/pi (radians-per-pixel-ish) as a coarse scale.
     // The Gauss-Newton iteration below corrects for the generic distortion.
-    double u = grid_.image_w * 0.5 + (d_target[0] / std::max(d_target[2], 1e-3))
+    double u = grid_.image_w * 0.5 + (d_target[0] / d_target[2])
                                      * std::max(step_x_ * (grid_.nx - 1) * 0.5, 1.0);
-    double v = grid_.image_h * 0.5 + (d_target[1] / std::max(d_target[2], 1e-3))
+    double v = grid_.image_h * 0.5 + (d_target[1] / d_target[2])
                                      * std::max(step_y_ * (grid_.ny - 1) * 0.5, 1.0);
 
     // Gauss-Newton on the unit-direction residual r = direction(u, v) - d_target.
     // The Jacobian J_uv = d(direction)/d(uv) (3x2). Step duv = -(J^T J)^-1 J^T r.
+    double resid_norm = std::numeric_limits<double>::infinity();
     for (int it = 0; it < 30; ++it) {
       Vec3 r_raw;
       Eigen::Matrix<double, 3, 2> dr_duv;
@@ -181,12 +193,23 @@ class GenericBSplineCamera : public CameraModel {
       const Eigen::Matrix<double, 3, 2> Junit = P * dr_duv;
       const Eigen::Vector3d resid =
           r_unit - Eigen::Vector3d(d_target[0], d_target[1], d_target[2]);
+      resid_norm = resid.norm();
       const Eigen::Matrix2d JtJ = Junit.transpose() * Junit;
       const Eigen::Vector2d g = Junit.transpose() * resid;
       const Eigen::Vector2d step = JtJ.ldlt().solve(g);
       u -= step[0];
       v -= step[1];
       if (step.norm() < 1e-7) break;
+    }
+
+    // Convergence + sanity gate: a non-converged solve, or one that lands far outside the
+    // image, is not a valid projection — return NaN rather than diverged finite garbage so
+    // callers can detect the failure (the parametric models leave this to the caller, but the
+    // generic model's GN can diverge to ~1e60, which is silently corrupting).
+    const double pad_w = 2.0 * grid_.image_w, pad_h = 2.0 * grid_.image_h;
+    if (!(resid_norm < 1e-3) || u < -pad_w || u > grid_.image_w + pad_w ||
+        v < -pad_h || v > grid_.image_h + pad_h) {
+      return Vec2{kNaN, kNaN};
     }
     return Vec2{u, v};
   }
@@ -241,8 +264,11 @@ class GenericBSplineCamera : public CameraModel {
     const double b = (uv[1] - grid_.margin) / step_y_;
     const int i0 = bspline_detail::clampi(static_cast<int>(std::floor(a)), 1, grid_.nx - 3);
     const int j0 = bspline_detail::clampi(static_cast<int>(std::floor(b)), 1, grid_.ny - 3);
-    const double s = a - i0;
-    const double t = b - j0;
+    // Clamp the fractional coord into [0,1] so out-of-domain pixels give bounded constant
+    // boundary extrapolation rather than evaluating the cubics far outside their valid range
+    // (where the weights explode to ~1e5 and produce garbage). In-domain pixels are unaffected.
+    const double s = std::max(0.0, std::min(1.0, a - i0));
+    const double t = std::max(0.0, std::min(1.0, b - j0));
     const std::array<double, 4> wi = bspline_detail::cubicBSplineWeights(s);
     const std::array<double, 4> wj = bspline_detail::cubicBSplineWeights(t);
 
@@ -291,8 +317,10 @@ class GenericBSplineCamera : public CameraModel {
     const double b = (v - grid_.margin) / step_y_;
     const int i0 = bspline_detail::clampi(static_cast<int>(std::floor(a)), 1, grid_.nx - 3);
     const int j0 = bspline_detail::clampi(static_cast<int>(std::floor(b)), 1, grid_.ny - 3);
-    const double s = a - i0;
-    const double t = b - j0;
+    // Clamp the fractional coord into [0,1] for out-of-domain pixels (constant boundary
+    // extrapolation) — see projectJacobianWrtParams. In-domain pixels already have s,t in [0,1).
+    const double s = std::max(0.0, std::min(1.0, a - i0));
+    const double t = std::max(0.0, std::min(1.0, b - j0));
     const std::array<double, 4> wi = bspline_detail::cubicBSplineWeights(s);
     const std::array<double, 4> wj = bspline_detail::cubicBSplineWeights(t);
     const std::array<double, 4> dwi = want_duv ? bspline_detail::cubicBSplineWeightsDeriv(s)

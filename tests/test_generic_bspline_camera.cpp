@@ -100,3 +100,62 @@ CF_TEST(generic_bspline_params_jacobian_has_sparse_support_pattern) {
   CF_EXPECT_TRUE(nonzero_cols <= 16 * 3);
   CF_EXPECT_TRUE(nonzero_cols >= 4 * 3);  // at the boundary some support is clipped
 }
+
+CF_TEST(generic_bspline_params_jacobian_values_match_finite_difference) {
+  // The sparsity test above is satisfied by a sign flip, a wrong scale, a dropped
+  // normalization projector, or a transposed block — none of which it can detect. Verify the
+  // actual VALUES of projectJacobianWrtParams against central differences over every param.
+  PinholeCamera pin(500.0, 500.0, 320.0, 240.0);
+  GenericBSplineGrid grid;
+  grid.nx = 16; grid.ny = 12;
+  grid.image_w = 640; grid.image_h = 480;
+  grid.margin = -30.0;
+  GenericBSplineCamera g(grid);
+  g.fitFromParametricCamera(pin);
+
+  const Vec3 X{0.1, -0.05, 3.0};  // projects comfortably inside the image
+  const Jacobian J = g.projectJacobianWrtParams(X);
+  const std::vector<double> p0 = g.params();
+  const double h = 1e-4;
+  for (std::size_t c = 0; c < p0.size(); ++c) {
+    std::vector<double> pp = p0, pm = p0;
+    pp[c] += h;
+    pm[c] -= h;
+    g.setParams(pp);
+    const Vec2 uvp = g.project(X);
+    g.setParams(pm);
+    const Vec2 uvm = g.project(X);
+    g.setParams(p0);
+    const double fdu = (uvp[0] - uvm[0]) / (2.0 * h);
+    const double fdv = (uvp[1] - uvm[1]) / (2.0 * h);
+    // ~5e-3 absolute floor absorbs the ~1e-7 px Gauss-Newton noise amplified by 1/(2h);
+    // 3% relative catches sign/scale/projector errors on the supporting columns.
+    CF_EXPECT_NEAR(J.data[0 * J.cols + c], fdu, std::max(5e-3, std::fabs(fdu) * 0.03));
+    CF_EXPECT_NEAR(J.data[1 * J.cols + c], fdv, std::max(5e-3, std::fabs(fdv) * 0.03));
+  }
+}
+
+CF_TEST(generic_bspline_fit_approximates_source_pinhole_at_interior_pixels) {
+  // Roundtrip (project∘unproject) only proves the model is self-consistent; it says nothing
+  // about FIT FIDELITY. Check the fitted ray field actually tracks the source pinhole's rays
+  // at interior pixels (a cubic B-spline approximates, so a small angular error is expected).
+  PinholeCamera pin(500.0, 500.0, 320.0, 240.0);
+  GenericBSplineGrid grid;
+  grid.nx = 16; grid.ny = 12;
+  grid.image_w = 640; grid.image_h = 480;
+  grid.margin = -30.0;
+  GenericBSplineCamera g(grid);
+  g.fitFromParametricCamera(pin);
+
+  std::vector<Vec2> pxs = {{320.0, 240.0}, {200.0, 150.0}, {420.0, 320.0},
+                           {280.0, 200.0}, {500.0, 360.0}};
+  for (const Vec2& px : pxs) {
+    const Vec3 rg = g.unproject(px);  // already unit length
+    const Vec3 rp_raw = pin.unproject(px);
+    const double np = std::sqrt(rp_raw[0] * rp_raw[0] + rp_raw[1] * rp_raw[1]
+                              + rp_raw[2] * rp_raw[2]);
+    const double dot = (rg[0] * rp_raw[0] + rg[1] * rp_raw[1] + rg[2] * rp_raw[2]) / np;
+    const double angle = std::acos(std::max(-1.0, std::min(1.0, dot)));
+    CF_EXPECT_TRUE(angle < 0.01);  // < ~0.57 deg between fitted and source rays
+  }
+}
