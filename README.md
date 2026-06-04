@@ -2,7 +2,7 @@
 
 **A unified, NVIDIA-accelerated geometric camera-calibration library that both *estimates* and *applies* calibration across pinhole, fisheye, and generic models — built once, deployed on both edge (Jetson) and server.**
 
-> **Status:** v0.5 in progress. The CPU calibration core, the observability-gated online tracker (the project differentiator), the IMU preintegration factor, and the runtime undistort path are implemented and tested. The generic per-pixel model, GPU solver back-ends, and the edge↔server numerical-parity test are deferred to v1.0 pending a CUDA / Jetson host.
+> **Status:** v0.5 in progress. The CPU calibration core, the observability-gated online tracker (the project differentiator), the IMU preintegration factor, the runtime undistort path, and the generic per-pixel B-spline model (CPU, header-only) are implemented and tested. The GPU solver back-ends and the edge↔server numerical-parity test are deferred to v1.0 pending a CUDA / Jetson host; the B-spline model's pipeline wiring + wide-FOV validation are likewise pending.
 
 ## Why it exists
 

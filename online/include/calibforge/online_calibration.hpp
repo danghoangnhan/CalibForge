@@ -63,9 +63,36 @@ class OnlineIntrinsicTracker {
 
     const SingleCameraResult res =
         calibrateSingleCamera(views_, reference_, poses_, make_, lm_opts);
-    const ObservabilityReport rep = assessObservability(res.information, obs_opts);
+
+    // Gate (and report) on the intrinsic information with the per-view POSES MARGINALIZED OUT.
+    // calibrateSingleCamera orders its information matrix [intrinsics (nin), poses (6 each)] and
+    // adds every pose as a FREE block coupled to the intrinsics, so the raw matrix mixes the two:
+    // gating/reporting on the full matrix (a) conflates pose conditioning with intrinsic
+    // conditioning and (b) leaks un-named pose-tangent directions into weak_parameters (names_
+    // labels only the nin intrinsics, so parameterUncertainty would emit "paramN" for the pose
+    // tangents). The information about the INTRINSICS alone — the only emitted quantity — is the
+    // Schur complement S = H_ii - H_ip H_pp^{-1} H_pi over the nin x nin intrinsic block. A
+    // direction observable only through a pose collapses S's normalized rcond -> 0 (assess-
+    // Observability clamps lambda_min >= 0) -> refuse (RULE #2). Mirrors OnlineExtrinsicTracker.
+    const int nin = static_cast<int>(reference_.size());
+    const int n = static_cast<int>(res.information.rows());
+    Eigen::MatrixXd Hin;
+    if (n <= nin) {
+      Hin = res.information;  // no free pose block (or malformed): already the marginal
+    } else {
+      const int pose_width = n - nin;
+      const Eigen::MatrixXd Hii = res.information.topLeftCorner(nin, nin);
+      const Eigen::MatrixXd Hip = res.information.topRightCorner(nin, pose_width);
+      const Eigen::MatrixXd Hpp = res.information.bottomRightCorner(pose_width, pose_width);
+      // S = H_ii - H_ip H_pp^{-1} H_pi (H_pi = H_ip^T by symmetry). allFinite() only guards a
+      // non-finite solve; a merely rank-deficient H_pp still yields a finite S whose collapsed
+      // null direction drives the normalized rcond -> 0 -> refuse (no explicit rank test needed).
+      const Eigen::MatrixXd S = Hii - Hip * Hpp.ldlt().solve(Hip.transpose());
+      Hin = S.allFinite() ? S : res.information;
+    }
+    const ObservabilityReport rep = assessObservability(Hin, obs_opts);
     const ParameterUncertainty unc = parameterUncertainty(
-        res.information, res.summary.final_cost, res.num_residuals, names_, obs_opts);
+        Hin, res.summary.final_cost, res.num_residuals, names_, obs_opts);
 
     e.confidence = rep.confidence;
     e.weak_parameters = unc.weak_parameters;

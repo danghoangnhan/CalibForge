@@ -163,7 +163,45 @@ CF_TEST(online_surround_rig_emits_behind_observability_gate) {
   CF_EXPECT_TRUE(e.confidence >= opts.min_confidence);
   CF_EXPECT_TRUE(e.weak_parameters.empty());
   CF_EXPECT_TRUE(e.extrinsics.size() == 1);
-  CF_EXPECT_TRUE(e.drift >= 0.0);
+  // The search accepted at least one cost-reducing move (cost_reduction cleared the pre-filter),
+  // so the emitted extrinsics differ from the reference and drift is strictly positive. (`>= 0`
+  // is a tautology: drift is a sum of norms.)
+  CF_EXPECT_TRUE(e.drift > 0.0);
+}
+
+CF_TEST(online_surround_rig_refuses_for_observability_when_information_collapses) {
+  // RULE #2 teeth: with the SAME well-excited, well-overlapped geometry but FLAT (textureless)
+  // images, every BEV agreement residual is identically zero, so the photometric information
+  // matrix H = J^T J collapses to ~0 and is NOT observable. The orchestrator must reach the
+  // observability gate (we relax the cheap cost/coverage pre-filters so it does) and REFUSE for
+  // observability — never emit. A stubbed identity-H gate (the exact failure this test exists to
+  // catch) would instead report observable and EMIT garbage extrinsics from a flat image.
+  PinholeCamera cam(300.0, 300.0, 160.0, 120.0);
+  Eigen::VectorXd intr(4);
+  intr << 300.0, 300.0, 160.0, 120.0;
+  CameraFactory mk = [](const Eigen::VectorXd& q) -> std::unique_ptr<CameraModel> {
+    return std::make_unique<PinholeCamera>(q[0], q[1], q[2], q[3]);
+  };
+
+  const SurroundScene s = makeOverlappingScene(cam);  // excited poses (motion gate passes)
+  Image8 flat(320, 240, 128);                          // textureless
+  std::vector<const Image8*> flat_imgs = {&flat, &flat};
+
+  OnlineSurroundRigOptions opts = overlappingOpts();
+  opts.min_cost_reduction = -1.0;  // a flat image yields zero cost reduction; let it through to
+                                   // the observability gate instead of the cost pre-filter.
+  opts.min_overlap_pairs = 50;     // flat images still overlap geometrically (~hundreds of pairs)
+
+  OnlineSurroundRig orch({mk, mk}, {intr, intr}, {s.T_c1_c0_ref}, opts);
+  for (std::size_t i = 0; i < s.poses.size(); ++i) orch.addFrame(flat_imgs, s.poses[i]);
+  const SurroundRigEmission e = orch.tryEmit();
+
+  CF_EXPECT_TRUE(!e.refused_for_motion);          // motion is excited...
+  CF_EXPECT_TRUE(!e.refused_for_no_signal);       // ...and there IS geometric overlap...
+  CF_EXPECT_TRUE(!e.emitted);                      // ...but the gate refuses:
+  CF_EXPECT_TRUE(e.refused_for_observability);     // no photometric information => not observable
+  CF_EXPECT_TRUE(!e.observable);
+  CF_EXPECT_TRUE(e.confidence == 0.0);
 }
 
 CF_TEST(online_surround_rig_refuses_when_confidence_below_threshold) {

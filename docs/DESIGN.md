@@ -218,8 +218,8 @@ C++ core mirrors this; ROS2 node wraps `online.ExtrinsicTracker`.
 | **v0.2** | Fisheye (KB) + stereo + VPI LDC export; runs on Orin | ✅ shipped (KB + DS + EUCM + stereo + warp-map; Orin-on-hardware deferred) |
 | **v0.3** | Multi-cam rig + hand-eye; ROS2 node | ✅ shipped (N-rig + hand-eye + ROS2 node + pybind11) |
 | **v0.4** | Rolling-shutter + cam-IMU (UAV focus); Isaac Sim synthetic validation | ✅ shipped (RS readout + cam-IMU rotation init + full Forster preintegration factor; Isaac Sim deferred to hardware) |
-| **v0.5** | Online/targetless recalibration prototype (UAV + surround-view) | ✅ shipped (`OnlineExtrinsicTracker` + `OnlineIntrinsicTracker` behind the observability + 6-axis motion-excitation gate; `FeatureTracker` targetless source; BEV photometric + UAV/surround-rig orchestrators pending) |
-| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs | ⏳ partial — CPU-runnable determinism test + accurate README/CLAUDE.md shipped; generic B-spline model + GPU solver back-ends + CPU-vs-GPU regime benchmark + Jetson↔server FP32/bf16↔FP64 parity test all deferred pending a CUDA / Jetson host |
+| **v0.5** | Online/targetless recalibration prototype (UAV + surround-view) | ✅ shipped (`OnlineExtrinsicTracker` + `OnlineIntrinsicTracker` behind the observability + 6-axis motion-excitation gate; `FeatureTracker` targetless source; BEV photometric + `OnlineUav` + `OnlineSurroundRig` orchestrators shipped & tested) |
+| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs | ⏳ partial — generic B-spline model (CPU, header-only) + CPU-runnable determinism test + CPU regime benchmark + accurate README/CLAUDE.md shipped; GPU solver back-ends + CPU-vs-GPU regime rows + Jetson↔server FP32/bf16↔FP64 parity test + the B-spline's pipeline wiring/wide-FOV validation all deferred pending a CUDA / Jetson host |
 
 ### 13. Risks
 - **BA back-end fit:** MegBA is tuned for SfM-scale problems; calibration problems are smaller/differently structured — may need kernel specialization (mitigate: keep solver interface abstract).

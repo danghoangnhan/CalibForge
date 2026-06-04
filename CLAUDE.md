@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A unified, NVIDIA-accelerated **geometric camera-calibration library** that both **estimates** and **applies** calibration across pinhole / fisheye / generic models, built **once** and deployed on both **edge** (Jetson) and **server** GPUs. The full vision is in [`docs/DESIGN.md`](docs/DESIGN.md); the research that validated/revised the design is in [`docs/RESEARCH.md`](docs/RESEARCH.md).
 
-**Repo stage:** v0.5 in progress. The CPU calibration core (pinhole / Brown-Conrady / Kannala-Brandt / double-sphere / EUCM), stereo / N-rig / hand-eye / cam-IMU rotation init + Forster preintegration / rolling-shutter pipelines, observability-gated online intrinsic + extrinsic trackers (the project differentiator), runtime undistort (CPU + CUDA + VPI-LDC export), io interop (OpenCV YAML, ROS CameraInfo, Isaac URDF, Kalibr camchain), Python (pybind11) + ROS2 bindings, and ~30 tests on a CUDA-less CI matrix (gcc + clang + Werror + OpenCV-gated + python) are all implemented. The generic per-pixel B-spline model, GPU solver back-ends (PyPose / Graphite / MegBA), and the edge↔server numerical-parity test are v1.0 deliverables pending a CUDA / Jetson host (see `docs/SPIKES.md` §D). Read the docs below to understand intent + non-obvious rules before extending.
+**Repo stage:** v0.5 in progress. The CPU calibration core (pinhole / Brown-Conrady / Kannala-Brandt / double-sphere / EUCM), stereo / N-rig / hand-eye / cam-IMU rotation init + Forster preintegration / rolling-shutter pipelines, observability-gated online intrinsic + extrinsic trackers (the project differentiator), runtime undistort (CPU + CUDA + VPI-LDC export), io interop (OpenCV YAML, ROS CameraInfo, Isaac URDF, Kalibr camchain), Python (pybind11) + ROS2 bindings, the generic per-pixel B-spline model (CPU, header-only), and ~113 tests on a CUDA-less CI matrix (gcc + clang + Werror + OpenCV-gated + python) are all implemented. The GPU solver back-ends (PyPose / Graphite / MegBA) and the edge↔server numerical-parity test remain v1.0 deliverables pending a CUDA / Jetson host; the B-spline model's pipeline wiring + wide-FOV validation are likewise pending (see `docs/SPIKES.md` §D). Read the docs below to understand intent + non-obvious rules before extending.
 
 ## Read these first (they encode decisions, not just description)
 
@@ -52,7 +52,7 @@ cmake --build build -j
 | Server (A100/H100/L4) | `sm_80/90/89` |
 | Desktop dev (RTX) | `sm_86/89` |
 
-> The CMake build produces the real `calibforge_tests` (~30 test cases) on a CUDA-less host; the CUDA half (the multi-arch matrix above + `calibforge_arch_probe` + `calibforge_cuda`) is enabled only when `nvcc` is found and the host-only path degrades cleanly when it is not (see `.github/workflows/ci.yml`'s `config-only` job). The deferred work pending a CUDA / Jetson host is documented in `docs/SPIKES.md` §D.
+> The CMake build produces the real `calibforge_tests` (~113 test cases host-only; 114 with the CUDA `remap_cpu_gpu_parity` case on a CUDA host); the CUDA half (the multi-arch matrix above + `calibforge_arch_probe` + `calibforge_cuda`) is enabled only when `nvcc` is found and the host-only path degrades cleanly when it is not (see `.github/workflows/ci.yml`'s `config-only` job). The deferred work pending a CUDA / Jetson host is documented in `docs/SPIKES.md` §D.
 
 ## Borrow map (what implements each layer — see RESEARCH.md / DEPENDENCIES.md)
 

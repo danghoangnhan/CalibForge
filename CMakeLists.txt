@@ -41,11 +41,19 @@ set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90"
 include(CheckLanguage)
 check_language(CUDA)
 if(CMAKE_CUDA_COMPILER)
-  enable_language(CUDA)
-  find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
+  # Seed the multi-arch matrix BEFORE enable_language(CUDA). Under policy CMP0104 (NEW since
+  # CMake 3.18; this project requires 3.24) enable_language(CUDA) INITIALIZES
+  # CMAKE_CUDA_ARCHITECTURES to the build host's native arch when it is unset — so a
+  # "if(NOT DEFINED ...)" guard placed AFTER it is always false, silently dropping the matrix
+  # and building host-native ONLY (e.g. sm_52 on a dev box), violating RULE #6 (one source,
+  # many arches: Jetson sm_87 + server sm_80/90 in a single build). Set it here so the default
+  # is the full matrix; a user-supplied -DCMAKE_CUDA_ARCHITECTURES on the command line is a
+  # cache entry already DEFINED at this point and is therefore honored unchanged.
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
     set(CMAKE_CUDA_ARCHITECTURES "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
   endif()
+  enable_language(CUDA)
+  find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
   set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
   option(CALIBFORGE_CUDA_DEBUG "Build CUDA with -G device debug (else -lineinfo)" OFF)
   if(CALIBFORGE_CUDA_DEBUG)

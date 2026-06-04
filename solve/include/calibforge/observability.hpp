@@ -39,8 +39,9 @@ struct ObservabilityOptions {
   // Threshold on the diagonally-normalized reciprocal condition number (lambda_min/
   // lambda_max in [0,1]). Below this, a parameter direction is effectively
   // unconstrained by the data and results must NOT be emitted. Default leaves a wide
-  // margin: observed values are ~1e-6 for a healthy calibration vs ~0 for a degenerate
-  // one (an ~11-order-of-magnitude gap).
+  // margin: a healthy calibration scores well above this floor — geometry-dependent,
+  // roughly ~2e-4 (well-excited UAV intrinsics) up to ~1e-2 (overlapped surround rig) in
+  // CalibForge's own scenarios — versus ~0 for a degenerate one (a many-order gap).
   double min_reciprocal_condition = 1e-9;
 };
 

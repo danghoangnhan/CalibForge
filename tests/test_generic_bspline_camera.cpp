@@ -2,10 +2,13 @@
 // field model. We verify:
 //   1. unproject + project roundtrip (pixel -> ray -> pixel) is accurate when the model is
 //      fitted from a parametric pinhole.
-//   2. The fitted model agrees with the pinhole at the control points (which is how it was
-//      constructed) and approximates it between them.
+//   2. The fitted ray field approximates the source pinhole everywhere (a uniform cubic
+//      B-spline is APPROXIMATING, not interpolating — it does not reproduce the source exactly
+//      even at the control points), with a small bounded angular error at interior pixels.
 //   3. project's Jacobian wrt pixel space is consistent with finite differences via the
 //      implicit-function-theorem chain.
+//   4. project() AND both analytic Jacobians signal NaN (never finite garbage) for points that
+//      cannot be projected — the RULE #2 failure contract.
 
 #include <cmath>
 #include <memory>
@@ -133,6 +136,48 @@ CF_TEST(generic_bspline_params_jacobian_values_match_finite_difference) {
     CF_EXPECT_NEAR(J.data[0 * J.cols + c], fdu, std::max(5e-3, std::fabs(fdu) * 0.03));
     CF_EXPECT_NEAR(J.data[1 * J.cols + c], fdv, std::max(5e-3, std::fabs(fdv) * 0.03));
   }
+}
+
+CF_TEST(generic_bspline_project_and_jacobians_signal_nan_for_nonprojectable_points) {
+  // RULE #2 failure contract: a point project() cannot project (behind the camera, or the zero
+  // vector with no direction) must yield NaN from project() AND from BOTH analytic Jacobians —
+  // never a finite block a solver would silently fold into the normal equations. project()
+  // returns {NaN,NaN} for these, but floor(NaN)->INT_MIN and min(1,NaN)->1 would launder that
+  // NaN into a finite-but-meaningless Jacobian without an explicit guard; this pins the guard.
+  PinholeCamera pin(500.0, 500.0, 320.0, 240.0);
+  GenericBSplineGrid grid;
+  grid.nx = 16; grid.ny = 12;
+  grid.image_w = 640; grid.image_h = 480;
+  grid.margin = -30.0;
+  GenericBSplineCamera g(grid);
+  g.fitFromParametricCamera(pin);
+
+  // Cover all three project() NaN-return paths: behind-camera (d_target.z<=0), the zero vector
+  // (no direction), and a far off-axis ray that projects outside the padded image / fails the
+  // Gauss-Newton convergence gate (the "~1e60 finite garbage" path the guard replaces).
+  const Vec3 behind{0.1, 0.05, -1.0};   // direction points away from the camera
+  const Vec3 zero{0.0, 0.0, 0.0};       // no direction at all
+  const Vec3 off_axis{1.0, 0.0, 1.0};   // ~45deg ray, well outside this 500-focal pinhole's FOV
+  const std::vector<Vec3> bad = {behind, zero, off_axis};
+  for (const Vec3& X : bad) {
+    const Vec2 uv = g.project(X);
+    CF_EXPECT_TRUE(std::isnan(uv[0]) && std::isnan(uv[1]));
+
+    const Jacobian Jp = g.projectJacobianWrtPoint(X);
+    CF_EXPECT_TRUE(Jp.rows == 2 && Jp.cols == 3);
+    for (double d : Jp.data) CF_EXPECT_TRUE(std::isnan(d));
+
+    const Jacobian Jq = g.projectJacobianWrtParams(X);
+    CF_EXPECT_TRUE(Jq.cols == static_cast<std::size_t>(3 * grid.nx * grid.ny));
+    for (double d : Jq.data) CF_EXPECT_TRUE(std::isnan(d));
+  }
+
+  // Sanity (the guard is not over-broad): a valid interior point still yields finite Jacobians
+  // from BOTH analytic functions.
+  const Vec3 ok{0.1, -0.05, 3.0};
+  CF_EXPECT_TRUE(!std::isnan(g.project(ok)[0]));
+  for (double d : g.projectJacobianWrtPoint(ok).data) CF_EXPECT_TRUE(std::isfinite(d));
+  for (double d : g.projectJacobianWrtParams(ok).data) CF_EXPECT_TRUE(std::isfinite(d));
 }
 
 CF_TEST(generic_bspline_fit_approximates_source_pinhole_at_interior_pixels) {
