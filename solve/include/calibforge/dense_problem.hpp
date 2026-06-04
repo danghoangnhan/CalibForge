@@ -19,6 +19,7 @@
 
 #include <Eigen/Dense>
 
+#include "calibforge/cuda_linear_solver.hpp"  // cudaSolverAvailable / cudaSolveLmStep (GPU backend)
 #include "calibforge/least_squares.hpp"  // LmOptions, LmSummary
 #include "calibforge/manifold.hpp"
 #include "calibforge/problem.hpp"
@@ -54,7 +55,12 @@ class DenseProblem : public Problem {
   }
 
   // Direct LM entry — calibrate_single uses this to preserve v0.1 numeric behavior.
-  LmSummary solveLm(const LmOptions& opts = LmOptions{}) {
+  // `backend` selects the per-iteration dense linear solver: CpuCeres/Auto keep the host Eigen
+  // path (byte-identical, default); GpuCuda offloads (J^T J + lambda diag) dx = -J^T r to the
+  // GPU (cuBLAS/cuSOLVER) when available, else transparently falls back to the host path.
+  LmSummary solveLm(const LmOptions& opts = LmOptions{},
+                    SolverBackend backend = SolverBackend::CpuCeres) {
+    const bool use_gpu = (backend == SolverBackend::GpuCuda) && cudaSolverAvailable();
     // Tangent-column offsets for non-constant blocks; row offsets for residuals.
     int n = 0;
     for (auto& b : blocks_) {
@@ -87,15 +93,29 @@ class DenseProblem : public Problem {
     double lambda = opts.initial_lambda;
     int it = 0;
     for (; it < opts.max_iterations; ++it) {
-      const Eigen::MatrixXd JtJ = J.transpose() * J;
       const Eigen::VectorXd g = J.transpose() * r;
       if (g.norm() < opts.gradient_tolerance) { s.converged = true; break; }
+      // J^T J is only needed for the HOST damped solve; the GPU path forms it on the device.
+      Eigen::MatrixXd JtJ;
+      if (!use_gpu) JtJ = J.transpose() * J;
 
       bool step_accepted = false;
       for (int tries = 0; tries < 12; ++tries) {
-        Eigen::MatrixXd A = JtJ;
-        A.diagonal() += lambda * JtJ.diagonal();  // Marquardt (scale-invariant) damping
-        const Eigen::VectorXd dx = A.ldlt().solve(-g);
+        Eigen::VectorXd dx;
+        if (use_gpu) {
+#ifdef CALIBFORGE_HAS_CUDA
+          // (J^T J + lambda diag(J^T J)) dx = -J^T r solved on the GPU (cuBLAS + cuSOLVER).
+          dx.resize(n_tangent_);
+          if (!cudaSolveLmStep(J.data(), m_, n_tangent_, r.data(), lambda, dx.data())) {
+            lambda *= 3.0;  // damped matrix not SPD on device: damp harder, retry (host reject path)
+            continue;
+          }
+#endif
+        } else {
+          Eigen::MatrixXd A = JtJ;
+          A.diagonal() += lambda * JtJ.diagonal();  // Marquardt (scale-invariant) damping
+          dx = A.ldlt().solve(-g);
+        }
 
         // Apply the retraction in place, saving originals so a reject can restore.
         std::vector<std::vector<double>> saved(blocks_.size());
@@ -151,7 +171,7 @@ class DenseProblem : public Problem {
     LmOptions lm;
     lm.max_iterations = options.max_iterations;
     lm.function_tolerance = options.function_tolerance;
-    const LmSummary s = solveLm(lm);
+    const LmSummary s = solveLm(lm, options.backend);
     SolveSummary out;
     out.converged = s.converged;
     out.iterations = s.iterations;

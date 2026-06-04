@@ -31,8 +31,11 @@ endif()
 
 # --- The single-source multi-arch matrix (edit here as new Jetson/server GPUs ship) -----
 # sm_72 Xavier · sm_87 Orin (primary edge) · sm_80/90 server (A100/H100) · sm_86/89 desktop/L4
-set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90"
+set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90;90-virtual"
     CACHE STRING "Default -gencode arch matrix (server + Jetson in one build)")
+# The trailing 90-virtual embeds compute_90 PTX so the fatbin JITs forward onto archs newer than
+# the toolkit knows (e.g. sm_120 / Blackwell on a CUDA 12.0 host) — RULE #6 forward-compat that
+# does not rely on driver SASS-compat. Drop it once the toolkit gains the target's native arch.
 
 # --- Detect CUDA; enable the GPU half only if a compiler is actually available ----------
 # When CUDA is present we follow NVIDIA's cuda-samples project template conventions
@@ -192,7 +195,8 @@ add_executable(calibforge_tests
   tests/test_online_uav.cpp
   tests/test_online_surround_rig.cpp
   tests/test_generic_bspline_camera.cpp
-  tests/test_determinism.cpp)
+  tests/test_determinism.cpp
+  tests/test_cuda_linear_solver.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)
@@ -219,17 +223,46 @@ endif()
 # --- CUDA server-undistort remap (#12). Built only with a CUDA toolkit, across the arch
 #     matrix; linked into the test suite, which guards the parity test on CALIBFORGE_HAS_CUDA. ---
 if(CALIBFORGE_HAS_CUDA)
-  add_library(calibforge_cuda STATIC apply/src/remap_cuda.cu)
+  add_library(calibforge_cuda STATIC
+    apply/src/remap_cuda.cu
+    solve/src/cuda_linear_solver.cu)   # native CUDA dense LM back-end (#25 GPU solver)
   target_include_directories(calibforge_cuda PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/apply/include)
+    ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/solve/include)
   set_target_properties(calibforge_cuda PROPERTIES
     CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     CUDA_SEPARABLE_COMPILATION ON)
   target_compile_features(calibforge_cuda PRIVATE cxx_std_17 cuda_std_17)
+  target_compile_definitions(calibforge_cuda PRIVATE CALIBFORGE_HAS_CUDA)  # cross-check decl
   if(TARGET CUDA::cudart)
     target_link_libraries(calibforge_cuda PRIVATE CUDA::cudart)  # cuda-samples template linkage
   endif()
+  # cuBLAS + cuSOLVER are HARD requirements of the native dense LM back-end
+  # (solve/src/cuda_linear_solver.cu: SYRK/GEMV + Cholesky), unlike cudart which the remap path
+  # alone needs. They ship with every full CUDA toolkit, so fail LOUDLY at configure time on a
+  # stripped toolkit that lacks them — an if(TARGET) guard would silently skip the link and leave
+  # the .cu's cublas*/cusolver* symbols unresolved, surfacing as a confusing link error instead.
+  if(NOT TARGET CUDA::cublas OR NOT TARGET CUDA::cusolver)
+    message(FATAL_ERROR
+      "CalibForge: CUDA toolkit found but CUDA::cublas / CUDA::cusolver targets are missing — the "
+      "native GPU dense LM solver needs both. Install the full CUDA toolkit (cuBLAS + cuSOLVER), "
+      "or build host-only (no nvcc).")
+  endif()
+  target_link_libraries(calibforge_cuda PRIVATE CUDA::cublas CUDA::cusolver)  # J^TJ/J^Tr + Cholesky
+
+  # Propagate the CUDA capability to EVERY consumer of the core headers (mirrors the
+  # CALIBFORGE_HAS_VPI INTERFACE pattern above). calibforge_core is the INTERFACE all targets link,
+  # and the header-only DenseProblem::solveLm() / cudaSolverAvailable() switch on this macro: define
+  # it only PRIVATE-to-the-lib and a TU that includes the core headers (but isn't the CUDA lib)
+  # compiles a DIFFERENT inline solveLm() body (ODR hazard) while cudaSolverAvailable() wrongly
+  # reports false. Linking the static back-end here also makes cudaSolveLmStep resolvable for every
+  # core consumer (the PRIVATE cublas/cusolver/cudart deps ride along via the static lib).
+  target_compile_definitions(calibforge_core INTERFACE CALIBFORGE_HAS_CUDA)
+  target_link_libraries(calibforge_core INTERFACE calibforge_cuda)
+
+  # tests link calibforge_cuda + see CALIBFORGE_HAS_CUDA transitively via calibforge_core now, but
+  # keep the explicit edges so the dependency is obvious at the test target and robust to refactors.
   target_link_libraries(calibforge_tests PRIVATE calibforge_cuda)
   target_compile_definitions(calibforge_tests PRIVATE CALIBFORGE_HAS_CUDA)
 endif()
@@ -263,5 +296,10 @@ endif()
 #     the default test build. Run: cmake --build build --target calibforge_bench && ./build/calibforge_bench
 add_executable(calibforge_bench tools/benchmark/calibforge_bench.cpp)
 target_link_libraries(calibforge_bench PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
+if(CALIBFORGE_HAS_CUDA)
+  # Link the native CUDA back-end so the benchmark can emit CPU-vs-GPU rows (#25 / SPIKES §D.1).
+  target_link_libraries(calibforge_bench PRIVATE calibforge_cuda)
+  target_compile_definitions(calibforge_bench PRIVATE CALIBFORGE_HAS_CUDA)
+endif()
 
 message(STATUS "CalibForge ${PROJECT_VERSION} configured (CUDA=${CALIBFORGE_HAS_CUDA}, OpenCV=${CALIBFORGE_HAS_OPENCV}). Core math is header-only; CPU tests build host-only.")

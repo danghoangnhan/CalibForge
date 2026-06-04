@@ -31,15 +31,26 @@
 #include "calibforge/calibrate_single.hpp"
 #include "calibforge/calibrate_stereo.hpp"
 #include "calibforge/camera_model.hpp"
+#include "calibforge/cuda_linear_solver.hpp"  // cudaSolverAvailable (GPU rows)
+#include "calibforge/dense_problem.hpp"        // DenseProblem + SolverBackend (CPU-vs-GPU section)
+#include "calibforge/manifold.hpp"
 #include "calibforge/pinhole_camera.hpp"
+#include "calibforge/problem.hpp"
+#include "calibforge/reprojection_residual.hpp"
 #include "sophus/se3.hpp"
 
 namespace {
 
 using calibforge::CameraFactory;
 using calibforge::CameraModel;
+using calibforge::DenseProblem;
+using calibforge::EuclideanParam;
+using calibforge::LmOptions;
 using calibforge::PinholeCamera;
+using calibforge::ReprojectionResidual;
 using calibforge::RigView;
+using calibforge::SE3Param;
+using calibforge::SolverBackend;
 using calibforge::StereoView;
 using calibforge::Vec2;
 using calibforge::Vec3;
@@ -244,6 +255,38 @@ SolveOutcome runRig(int n_views, int n_cams, int board_rows, int board_cols,
   return o;
 }
 
+// Single-camera reprojection problem assembled directly on DenseProblem, solved with the chosen
+// backend. Isolates the SOLVER (the linear algebra the GPU back-end changes) on identical input,
+// so the CPU-vs-GPU comparison is apples-to-apples. n_tangent = 4 + 6*n_views grows with views.
+SolveOutcome solveDenseSingle(int n_views, int board_rows, int board_cols, SolverBackend backend,
+                              std::uint64_t seed) {
+  PinholeCamera gt(500.0, 500.0, 320.0, 240.0);
+  const std::vector<Vec3> board = makeBoard(board_rows, board_cols, 0.1);
+  const std::vector<Sophus::SE3d> gt_poses = makeRandomPoses(n_views, seed);
+
+  std::mt19937_64 rng(seed ^ 0xa5a5);
+  std::vector<double> intr = {480.0, 520.0, 310.0, 250.0};
+  std::vector<std::array<double, 7>> pose(gt_poses.size());
+  for (std::size_t i = 0; i < gt_poses.size(); ++i)
+    SE3Param::store(perturbPose(gt_poses[i], 0.03, rng), pose[i].data());
+
+  DenseProblem problem;
+  problem.addParameterBlock(intr.data(), std::make_shared<EuclideanParam>(4));
+  for (auto& p : pose) problem.addParameterBlock(p.data(), std::make_shared<SE3Param>());
+  for (std::size_t i = 0; i < gt_poses.size(); ++i)
+    for (const Vec3& X : board) {
+      const Eigen::Vector3d Xc = gt_poses[i] * Eigen::Vector3d(X[0], X[1], X[2]);
+      const Vec2 px = gt.project(Vec3{Xc.x(), Xc.y(), Xc.z()});
+      problem.addResidualBlock(std::make_unique<ReprojectionResidual>(pinholeFactory(), 4, X, px),
+                               {intr.data(), pose[i].data()});
+    }
+  const auto s = problem.solveLm(LmOptions{}, backend);
+  SolveOutcome o;
+  o.final_cost = s.final_cost;
+  o.iterations = s.iterations;
+  return o;
+}
+
 }  // namespace
 
 int main() {
@@ -271,9 +314,71 @@ int main() {
                 t.median_iters, t.median_final_cost);
   }
 
-  std::fprintf(stderr,
-               "\nGPU rows pending: SPIKES.md §D.1 (PyPose / Graphite / Ceres on the same "
-               "regime) requires a CUDA / Jetson host. CPU rows above are the apples-to-apples "
-               "baseline.\n");
+  // --- CPU-vs-GPU solver comparison (native CUDA back-end, #25). Same DenseProblem solved with
+  //     each backend. RULE #1: the GPU is NOT automatically faster — for small calibrations the
+  //     host<->device transfer + per-step malloc/launch overhead dominates an O(n^3) solve, so
+  //     the CPU wins; the GPU earns its keep only as the problem grows. The sweep DELIBERATELY
+  //     starts at n_views=1 (n_tangent=10) so it actually samples the small-calibration regime
+  //     RULE #1 is about and LOCATES the crossover, instead of starting past it (no silent caps).
+  //     Measured on an RTX 5090 / CUDA 12.0: CPU wins through ~5 views, GPU crosses over at ~8
+  //     (n_tangent~52); the gap then widens to ~6-7x by 80 views. Crossover is hardware-specific;
+  //     re-measure per target (Jetson Orin sm_87 etc.) — never assume. ---
+#ifdef CALIBFORGE_HAS_CUDA
+  if (calibforge::cudaSolverAvailable()) {
+    solveDenseSingle(20, 9, 9, SolverBackend::GpuCuda, 0xC0FFEE);  // warm up CUDA ctx / JIT / handles
+    // Iteration counts are reported alongside the timings: a speedup is only meaningful if both
+    // backends did the SAME amount of work (converged in ~the same #iterations to ~the same cost).
+    std::printf(
+        "\nproblem,n_views,n_points,n_cams,n_tangent,cpu_ms_median,gpu_ms_median,gpu_speedup,"
+        "cpu_iters,gpu_iters,cpu_cost_median,gpu_cost_median\n");
+    bool any_cost_divergence = false;
+    for (int v : {1, 2, 3, 5, 8, 10, 20, 40, 80}) {
+      // More reps where each solve is cheap (the small regime that pins the crossover, and where
+      // timer noise matters most); fewer where a single solve already costs hundreds of ms.
+      const int reps = (v <= 10) ? 15 : 5;
+      const Timing tc =
+          repeat(reps, [&]() { return solveDenseSingle(v, 9, 9, SolverBackend::CpuCeres, 0xC0FFEE); });
+      const Timing tg =
+          repeat(reps, [&]() { return solveDenseSingle(v, 9, 9, SolverBackend::GpuCuda, 0xC0FFEE); });
+      const double speedup = tc.median_ms / std::max(tg.median_ms, 1e-9);
+      std::printf("dense_single,%d,%d,1,%d,%.3f,%.3f,%.2f,%d,%d,%.3e,%.3e\n", v, 9 * 9, 4 + 6 * v,
+                  tc.median_ms, tg.median_ms, speedup, tc.median_iters, tg.median_iters,
+                  tc.median_final_cost, tg.median_final_cost);
+      // A speedup is apples-to-apples only if BOTH backends reach the same minimum. The scenes are
+      // noise-free, so a correct solve drives final_cost to ~0 (machine precision, ~1e-23); the
+      // meaningful check is "did both converge to the noise-free minimum?", NOT a relative cost
+      // ratio (two ~1e-25 values have a meaningless ratio at the bottom of the basin). Flag a row
+      // only if either backend's cost stays above a generous convergence floor — that would mean
+      // one solver failed to converge while the other succeeded, invalidating the speedup (RULE #1:
+      // precision != correctness; never report a speedup between non-equivalent solves).
+      const double worst_cost = std::max(tc.median_final_cost, tg.median_final_cost);
+      if (worst_cost > 1e-6) {
+        any_cost_divergence = true;
+        std::fprintf(stderr,
+                     "  WARNING dense_single n_views=%d: a backend did not reach the noise-free "
+                     "minimum (cpu=%.3e gpu=%.3e) — the gpu_speedup for this row is NOT "
+                     "apples-to-apples.\n",
+                     v, tc.median_final_cost, tg.median_final_cost);
+      }
+    }
+    if (!any_cost_divergence)
+      std::fprintf(stderr,
+                   "  (both backends converged to the noise-free minimum on every row — speedups "
+                   "are apples-to-apples.)\n");
+    std::fprintf(stderr,
+                 "\nGPU rows above: native CalibForge CUDA back-end (cuBLAS SYRK/GEMV + cuSOLVER "
+                 "Cholesky) vs host Eigen, identical DenseProblem. gpu_speedup<1 => CPU faster "
+                 "(small single calibration; RULE #1 — observed at the low-n_views rows, where the "
+                 "CPU is the default backend). The crossover above which the GPU wins is "
+                 "hardware-specific and MEASURED here, never assumed. PyPose/MegBA back-ends + "
+                 "Jetson<->server parity remain pending (#25 / SPIKES.md §D).\n");
+  } else
+#endif
+  {
+    std::fprintf(stderr,
+                 "\nGPU rows pending: this build has no CUDA back-end (CALIBFORGE_HAS_CUDA off). "
+                 "Build on a CUDA host for the native-CUDA-vs-CPU solver rows. CPU rows above are "
+                 "the apples-to-apples baseline.\n");
+  }
   return 0;
 }

@@ -18,10 +18,13 @@
 namespace calibforge {
 
 enum class SolverBackend {
-  Auto,         // route by problem size: small/single -> CPU, batched/large -> GPU
+  Auto,         // size-based routing (small/single -> CPU, batched/large -> GPU) is the INTENT;
+                // currently Auto == CPU until a measured crossover threshold is wired (RULE #1).
   CpuCeres,     // BSD; fastest on small single problems; also the accuracy oracle
-  GpuPyPose,    // Apache-2.0; sparse-Jacobian LM + FastTriggs; batched/online
-  GpuGraphite,  // MIT (WIP); implicit-Schur + bf16; edge / low-VRAM (Jetson-proven)
+  GpuCuda,      // native CalibForge CUDA dense LM (cuBLAS SYRK/GEMV + cuSOLVER Cholesky); built
+                // when CALIBFORGE_HAS_CUDA, falls back to CPU otherwise. See cuda_linear_solver.hpp.
+  GpuPyPose,    // Apache-2.0; sparse-Jacobian LM + FastTriggs; batched/online (not yet wired)
+  GpuGraphite,  // MIT (WIP); implicit-Schur + bf16; edge / low-VRAM (not yet wired)
 };
 
 struct SolveOptions {
