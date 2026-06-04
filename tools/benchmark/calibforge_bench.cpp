@@ -11,10 +11,8 @@
 // Build (via the top-level CMakeLists.txt):
 //   cmake --build build --target calibforge_bench
 //   ./build/calibforge_bench
-// Or compile standalone (header-only library):
-//   c++ -std=c++17 -O2 -I core/include -I solve/include -I pipelines/include \
-//       -I build/_deps/eigen-src -I build/_deps/sophus-src tools/benchmark/calibforge_bench.cpp \
-//       -o calibforge_bench
+// Or compile standalone (header-only library), as a single command:
+//   c++ -std=c++17 -O2 -I core/include -I solve/include -I pipelines/include -I build/_deps/eigen-src -I build/_deps/sophus-src tools/benchmark/calibforge_bench.cpp -o calibforge_bench
 
 #include <algorithm>
 #include <chrono>

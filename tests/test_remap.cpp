@@ -71,10 +71,16 @@ CF_TEST(remap_undistorts_distorted_board) {
   CF_EXPECT_TRUE(worst < 1.0);  // detector + interpolation budget
 }
 
-// The CUDA remap backend is unavailable on this CPU/CI host; the parity test below is
-// compiled out until built on a CUDA host.
-CF_TEST(cuda_remap_unavailable_on_host) {
+// cudaRemapAvailable() must MATCH the build configuration, not assume a CPU-only host: it is
+// true exactly when this build linked the CUDA backend (CALIBFORGE_HAS_CUDA) and false on a
+// CPU/CI host. (Asserting it is always false fails on a real CUDA host — the v1.0 target.)
+// The bit-exact CPU<->GPU parity test below is compiled in only on a CUDA host.
+CF_TEST(cuda_remap_availability_matches_build) {
+#ifdef CALIBFORGE_HAS_CUDA
+  CF_EXPECT_TRUE(cudaRemapAvailable());
+#else
   CF_EXPECT_TRUE(!cudaRemapAvailable());
+#endif
 }
 
 #ifdef CALIBFORGE_HAS_CUDA
