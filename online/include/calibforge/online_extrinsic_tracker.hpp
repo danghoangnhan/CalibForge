@@ -110,18 +110,41 @@ class OnlineExtrinsicTracker {
       for (const char* a : {"_tx", "_ty", "_tz", "_rx", "_ry", "_rz"})
         extr_names.push_back(base + a);
     }
-    // We want the gate to look at the extrinsic sub-block of the information matrix. Build
-    // it; assess + uncertainty operate on the diagonal-normalized form, so the sub-block is
-    // a self-contained signal (extrinsic conditioning independent of poses).
+    // Gate on the extrinsic information with the per-view POSES MARGINALIZED OUT. calibrateRig
+    // adds every per-view pose as a FREE parameter block coupled to the extrinsics (see
+    // calibrate_rig.hpp), so the raw diagonal sub-block H_ee OVERSTATES the extrinsic
+    // information — it MASKS the directions in which extrinsic error aliases into the (also-free)
+    // pose error. The information about the extrinsics ALONE is the Schur complement
+    //     S = H_ee - H_ep H_pp^{-1} H_pe.
+    // Marginalizing EXPOSES those alias/null directions: when an extrinsic direction is
+    // observable only through a pose, S collapses to rank-deficient there even though H_ee is
+    // not. assessObservability gates on the diagonally-normalized reciprocal condition number
+    // and clamps lambda_min >= 0, so a collapsed direction drives the score -> 0 and the gate
+    // REFUSES — closing the precision!=accuracy false-ACCEPT that gating on the raw H_ee allows
+    // (emitting drifted extrinsics that are not actually constrained by the data). Empirically
+    // the well-excited case still clears the gate (~1.5e-3) while a coupled-pose alias that the
+    // raw block rates fully observable is correctly driven to refusal. (The BEV surround path's
+    // block is already self-contained — its rig poses are fixed inputs, not free parameters —
+    // so it needs no Schur step.)
     const int extr_width = 6 * ncam_m1;
     const int n = static_cast<int>(res.information.rows());
     Eigen::MatrixXd Hex;
-    if (n >= extr_width) {
-      Hex = res.information.topLeftCorner(extr_width, extr_width);
-    } else {
-      // Should not happen for well-formed problems — fall back to the full matrix to keep
-      // the gate honest rather than silently passing.
+    if (n <= extr_width) {
+      // No free pose block present (or malformed): the block is already the marginal
+      // information. (n < extr_width should not happen; fall back to the full matrix.)
       Hex = res.information;
+    } else {
+      const int pose_width = n - extr_width;
+      const Eigen::MatrixXd Hee = res.information.topLeftCorner(extr_width, extr_width);
+      const Eigen::MatrixXd Hep = res.information.topRightCorner(extr_width, pose_width);
+      const Eigen::MatrixXd Hpp = res.information.bottomRightCorner(pose_width, pose_width);
+      // S = H_ee - H_ep H_pp^{-1} H_pe (H_pe = H_ep^T by symmetry of the information matrix).
+      const Eigen::MatrixXd S = Hee - Hep * Hpp.ldlt().solve(Hep.transpose());
+      // allFinite() only guards a non-finite solve (NaN/Inf). A merely rank-deficient H_pp (an
+      // unobservable pose) still yields a finite S whose marginalized null direction collapses
+      // the normalized rcond -> 0 in assessObservability (which clamps lambda_min >= 0), so the
+      // gate REFUSES rather than silently passing — no explicit rank test on H_pp is needed.
+      Hex = S.allFinite() ? S : res.information;
     }
     const ObservabilityReport rep = assessObservability(Hex, obs_opts);
     const ParameterUncertainty unc = parameterUncertainty(

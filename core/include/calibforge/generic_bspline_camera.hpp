@@ -107,8 +107,9 @@ class GenericBSplineCamera : public CameraModel {
     }
     // Default to identity ray field: every control point = (0, 0, 1), so unproject() returns
     // (0, 0, 1) everywhere. With a constant field, project()'s Gauss-Newton Jacobian is
-    // singular and cannot refine, so it returns its (unconverged) pinhole-style initial guess;
-    // populate the grid via fitFromParametricCamera() before relying on project().
+    // singular and cannot refine, so off-axis directions fail the convergence gate and project()
+    // returns NaN (not the initial guess); populate the grid via fitFromParametricCamera()
+    // before relying on project().
     for (int j = 0; j < grid.ny; ++j)
       for (int i = 0; i < grid.nx; ++i) params_[static_cast<std::size_t>(3 * (i * grid.ny + j)) + 2] = 1.0;
     step_x_ = (grid.image_w - 1.0 - 2.0 * grid.margin) / (grid.nx - 1);
@@ -219,6 +220,19 @@ class GenericBSplineCamera : public CameraModel {
     // d direction/d uv * d uv/d xyz = d d_target/d xyz
     // -> d uv/d xyz = (J_dir_uv)^-1 * J_dir_xyz   (using pseudoinverse for 3->2).
     const Vec2 uv = project(point_cam);
+    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+      // project() rejected this point (behind camera / diverged / out of image): there is no
+      // valid local linearization at a non-existent projection. Return a NaN Jacobian so a
+      // BA/online solver DETECTS the failure (e.g. drops the residual) instead of folding
+      // finite garbage into the normal equations — silently corrupting emitted params
+      // (CLAUDE.md rule 2). NB: floor(NaN)->INT_MIN and min(1,NaN)->1 would otherwise launder
+      // the NaN into a finite-but-meaningless block below.
+      Jacobian Jn;
+      Jn.rows = 2;
+      Jn.cols = 3;
+      Jn.data.assign(6, std::numeric_limits<double>::quiet_NaN());
+      return Jn;
+    }
     const double n = std::sqrt(point_cam[0] * point_cam[0] + point_cam[1] * point_cam[1]
                               + point_cam[2] * point_cam[2]);
     Vec3 r_raw;
@@ -260,6 +274,13 @@ class GenericBSplineCamera : public CameraModel {
     J.data.assign(static_cast<std::size_t>(2) * J.cols, 0.0);
 
     const Vec2 uv = project(point_cam);
+    if (!std::isfinite(uv[0]) || !std::isfinite(uv[1])) {
+      // See projectJacobianWrtPoint: a non-projectable point has no valid linearization;
+      // emit a detectable NaN block rather than laundering NaN through floor()/min() into a
+      // finite-garbage param Jacobian (CLAUDE.md rule 2).
+      J.data.assign(J.data.size(), std::numeric_limits<double>::quiet_NaN());
+      return J;
+    }
     const double a = (uv[0] - grid_.margin) / step_x_;
     const double b = (uv[1] - grid_.margin) / step_y_;
     const int i0 = bspline_detail::clampi(static_cast<int>(std::floor(a)), 1, grid_.nx - 3);

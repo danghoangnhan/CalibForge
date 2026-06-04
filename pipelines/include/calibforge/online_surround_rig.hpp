@@ -45,14 +45,20 @@ struct OnlineSurroundRigOptions {
   online::MotionExcitationOptions motion;
   ObservabilityOptions obs_opts{};
   // The observability gate threshold: emit only when the photometric information matrix's
-  // reciprocal condition number clears this. A healthy estimate scores ~1e-6 (see
-  // solve/observability.hpp:41-44); this is the ACCURACY guarantee (RULE #2).
+  // reciprocal condition number clears this. A healthy estimate scores roughly ~1e-3..1e-2 on
+  // this BEV path (geometry-dependent; cf. solve/observability.hpp). This is the OBSERVABILITY
+  // / CONDITIONING gate — NECESSARY but NOT sufficient for accuracy: a well-conditioned
+  // photometric minimum can still be BIASED (the coarse BEV minimum is, in fact, biased), so a
+  // high confidence here means "this direction is constrained by the data", NOT "this estimate
+  // is accurate" (precision != accuracy, RULE #2). It guards against emitting unconstrained
+  // directions; it does not certify the estimate is unbiased.
   double min_confidence = 1e-6;
   // Finite-difference step (extrinsic SE3 tangent) used to build the photometric information
   // matrix; small enough for accuracy, large enough to clear bilinear-sampling quantization.
   double fd_step = 1e-3;
-  // --- The two below are cheap PRE-FILTERS, not the accuracy guarantee (that is the
-  //     observability gate above). They reject obvious random-walk / no-signal windows early. ---
+  // --- The two below are cheap PRE-FILTERS demoted ahead of the observability gate above.
+  //     They reject obvious random-walk / no-signal windows early (neither is an accuracy or
+  //     observability guarantee — that is the gate above). ---
   // Cost reduction must clear this fraction (e.g. 0.05 = 5% drop in mean squared intensity
   // diff over the BEV overlap zones).
   double min_cost_reduction = 0.05;
