@@ -95,10 +95,11 @@ Low cost does not mean trustworthy parameters — precision ≠ accuracy.
 | `OnlineIntrinsicTracker` | `online/online_calibration.hpp` | Drift tracking of single-camera intrinsics behind the gate |
 | `OnlineExtrinsicTracker` | `online/online_extrinsic_tracker.hpp` | Drift tracking of rig extrinsics behind the gate + 6-axis motion gate |
 
-Both expose `addFrame(view, pose) / tryEmit(min_confidence, ...) -> Emission`. The emission
-carries `emitted` (false ⇒ refused), the recovered parameters when emitted, `confidence`
-(observability rcond), `drift` vs the reference, and `weak_parameters` (named directions
-the gate flagged).
+Both expose `addFrame(view, pose) / tryEmit(min_confidence, ...)`. The intrinsic tracker
+returns `Emission`; the extrinsic tracker returns `ExtrinsicEmission` (which adds the refined
+`extrinsics`, `refused_for_motion`, and `unexcited_axes`). Both carry `emitted` (false ⇒
+refused), the recovered parameters when emitted, `confidence` (observability rcond), `drift`
+vs the reference, and `weak_parameters` (named directions the gate flagged).
 
 ---
 
@@ -157,7 +158,7 @@ the gate flagged).
 | What | When built |
 |---|---|
 | `calibforge_core` (header-only INTERFACE) | always |
-| `calibforge_tests` (~35 cases) | always (host-only, no CUDA needed) |
+| `calibforge_tests` (~109 cases) | always (host-only, no CUDA needed) |
 | `calibforge_opencv_tests` | when OpenCV is found |
 | `calibforge_cuda` + `calibforge_arch_probe` (multi-arch matrix) | when `nvcc` is found |
 | `calibforge_python` | with `-DCALIBFORGE_PYTHON=ON` |

@@ -103,7 +103,7 @@ inline BevAgreementResult bevAgreementCost(
     const std::vector<Sophus::SE3d>& T_ck_c0_with_identity_first,     // size N (0th is identity)
     const Sophus::SE3d& T_c0_w,
     const std::vector<const Image8*>& images,                          // size N
-    int min_overlap = 1) {
+    int min_cameras_per_sample = 2) {  // a sample contributes only if >= this many cameras see it
   BevAgreementResult res;
   const int N = static_cast<int>(cameras.size());
   if (N < 2) return res;
@@ -126,7 +126,7 @@ inline BevAgreementResult bevAgreementCost(
       seen[static_cast<std::size_t>(k)] = 1u;
       ++count;
     }
-    if (count < std::max(2, min_overlap + 1)) continue;
+    if (count < std::max(2, min_cameras_per_sample)) continue;
 
     // Accumulate squared differences over every unordered camera pair that both saw the
     // sample. The pair count grows as O(count^2); for typical 4-6 surround rigs this is

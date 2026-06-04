@@ -4,15 +4,16 @@
 // calibration problem sizes (#views, #points, #cameras). GPU rows fill in when a CUDA host
 // is available (the deferred half of v1.0 — see issue #25 / SPIKES.md §D).
 //
-// Outputs a CSV table to stdout so it can be pasted into docs/BENCHMARKS.md when the GPU
-// numbers exist. Each row reports:
+// Outputs a CSV table to stdout to seed docs/BENCHMARKS.md (the GPU rows fill in on a CUDA
+// host). Each row reports:
 //   problem, n_views, n_points, n_cams, cpu_ms_median, cpu_iters_median, final_cost_median
 //
 // Build (via the top-level CMakeLists.txt):
 //   cmake --build build --target calibforge_bench
 //   ./build/calibforge_bench
-// Or compile standalone (header-only library), as a single command:
-//   c++ -std=c++17 -O2 -I core/include -I solve/include -I pipelines/include -I build/_deps/eigen-src -I build/_deps/sophus-src tools/benchmark/calibforge_bench.cpp -o calibforge_bench
+// Or compile standalone (header-only library), as a single command (the SOPHUS define avoids
+// Sophus' optional fmt dependency, matching the CMake build):
+//   c++ -std=c++17 -O2 -DSOPHUS_USE_BASIC_LOGGING -I core/include -I solve/include -I pipelines/include -I build/_deps/eigen-src -I build/_deps/sophus-src tools/benchmark/calibforge_bench.cpp -o calibforge_bench
 
 #include <algorithm>
 #include <chrono>
@@ -90,9 +91,11 @@ Timing repeat(int trials, F fn) {
   std::vector<int> its(trials);
   std::vector<double> costs(trials);
   for (int i = 0; i < trials; ++i) {
-    const auto t0 = std::chrono::high_resolution_clock::now();
+    // steady_clock is guaranteed monotonic; high_resolution_clock aliases the (non-steady)
+    // system_clock on libstdc++ and can jump under NTP, corrupting an interval measurement.
+    const auto t0 = std::chrono::steady_clock::now();
     auto r = fn();
-    const auto t1 = std::chrono::high_resolution_clock::now();
+    const auto t1 = std::chrono::steady_clock::now();
     ms[i] = std::chrono::duration<double, std::milli>(t1 - t0).count();
     its[i] = r.iterations;
     costs[i] = r.final_cost;
