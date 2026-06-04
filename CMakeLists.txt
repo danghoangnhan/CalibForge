@@ -23,7 +23,10 @@ if(CALIBFORGE_WERROR)
   add_compile_options($<$<COMPILE_LANGUAGE:CXX>:-Wall>
                       $<$<COMPILE_LANGUAGE:CXX>:-Wextra>
                       $<$<COMPILE_LANGUAGE:CXX>:-Wpedantic>
-                      $<$<COMPILE_LANGUAGE:CXX>:-Werror>)
+                      $<$<COMPILE_LANGUAGE:CXX>:-Werror>
+                      # Gate the host compiler's warnings inside CUDA TUs too, so .cu files
+                      # cannot smuggle warnings into a strict build on a CUDA host.
+                      $<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=-Wall,-Wextra,-Werror>)
 endif()
 
 # --- The single-source multi-arch matrix (edit here as new Jetson/server GPUs ship) -----
@@ -134,6 +137,11 @@ endif()
 find_path(CALIBFORGE_VPI_INCLUDE vpi/LensDistortionModels.h)
 if(CALIBFORGE_VPI_INCLUDE)
   set(CALIBFORGE_HAS_VPI ON)
+  # Propagate the define to the compiler (mirrors CALIBFORGE_HAS_CUDA below); without this the
+  # #ifdef CALIBFORGE_HAS_VPI in apply/vpi_ldc.hpp was dead and vpiLdcAvailable() was always
+  # false even on a Jetson+VPI host. calibforge_core is the INTERFACE every target links.
+  target_compile_definitions(calibforge_core INTERFACE CALIBFORGE_HAS_VPI)
+  target_include_directories(calibforge_core SYSTEM INTERFACE ${CALIBFORGE_VPI_INCLUDE})
   message(STATUS "CalibForge: VPI SDK found -> apply/ VPI-LDC binding enabled.")
 else()
   set(CALIBFORGE_HAS_VPI OFF)

@@ -59,7 +59,13 @@ CF_TEST(vpi_polynomial_coeffs_map_by_named_field) {
   CF_EXPECT_NEAR(c.k6, 0.0, 1e-15);
 }
 
-// On this CPU/CI host the VPI LDC backend (Jetson PVA/VIC) is not available.
-CF_TEST(vpi_ldc_backend_unavailable_on_host) {
+// vpiLdcAvailable() must MATCH the build configuration: true exactly when configured against
+// the Jetson VPI SDK (CALIBFORGE_HAS_VPI), false on a CPU/CI host. (Asserting it is always
+// false would fail on a real Jetson+VPI build — the rule-5/6 deliverable.)
+CF_TEST(vpi_ldc_availability_matches_build) {
+#ifdef CALIBFORGE_HAS_VPI
+  CF_EXPECT_TRUE(vpiLdcAvailable());
+#else
   CF_EXPECT_TRUE(!vpiLdcAvailable());
+#endif
 }

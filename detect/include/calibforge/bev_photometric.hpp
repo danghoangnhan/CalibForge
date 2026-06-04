@@ -12,8 +12,11 @@
 //   a systematic BEV-overlap intensity gap. Random search on the extrinsics minimizes it.
 //
 // Output of this module is updated per-camera extrinsics; the online_surround_rig.hpp
-// orchestrator wires the result behind the same observability/motion gates as the rest of
-// the differentiator (RULE #2 — never silently emit ill-conditioned params).
+// orchestrator emits them ONLY behind the observability gate (RULE #2 — never silently emit
+// ill-conditioned params). bevInformationMatrix() (below) builds the photometric information
+// matrix H = J^T J of the agreement residuals over the extrinsic tangent; the orchestrator
+// runs assessObservability()/parameterUncertainty() on it, exactly like the target-based
+// trackers, with the motion-excitation + cost-reduction checks as cheap pre-filters only.
 //
 // Coordinate convention:
 //   - Ground plane = z=0 in the WORLD frame (the rig's local nav frame).
@@ -242,6 +245,113 @@ inline BevRandomSearchResult bevRandomSearchExtrinsics(
   out.overlap_count = best_r.overlap_count;  // FINAL coverage of the emitted extrinsics
   if (out.initial_cost > 1e-12)
     out.cost_reduction_ratio = (out.initial_cost - out.final_cost) / out.initial_cost;
+  return out;
+}
+
+// Photometric information matrix H = J^T J of the BEV agreement residuals (each residual is a
+// per-overlap-pair intensity difference) w.r.t. the 6*(N-1) inter-camera extrinsic tangent, at
+// the given extrinsics and accumulated over every rig frame. This is the OBSERVABILITY signal
+// the surround orchestrator gates on (RULE #2): a low photometric cost does NOT mean the
+// extrinsics are well-determined — only an information matrix that is full-rank and
+// well-conditioned does (precision != accuracy). The overlap set is FIXED at the nominal
+// extrinsics so the finite-difference residual Jacobian is well-defined; pairs whose rays leave
+// the image under a perturbation simply contribute no gradient there. Feed H to
+// assessObservability()/parameterUncertainty() exactly as the target-based trackers do.
+struct BevInformation {
+  Eigen::MatrixXd H;          // 6*(N-1) x 6*(N-1) information matrix (empty if no overlap)
+  int num_residuals = 0;      // number of overlap-pair residuals
+  double residual_ssd = 0.0;  // sum of squared nominal residuals (2*final_cost for the gate)
+};
+
+inline BevInformation bevInformationMatrix(
+    const std::vector<BevSample>& samples,
+    const std::vector<const CameraModel*>& cameras,           // size N
+    const std::vector<Sophus::SE3d>& extrinsics,              // size N-1, T_ck_c0
+    const std::vector<Sophus::SE3d>& rig_poses,               // size F, T_c0_w
+    const std::vector<std::vector<const Image8*>>& images,    // size F, each size N
+    double fd_step = 1e-3) {
+  BevInformation out;
+  const int N = static_cast<int>(cameras.size());
+  if (N < 2) return out;
+  if (extrinsics.size() + 1 != static_cast<std::size_t>(N)) return out;
+  if (rig_poses.size() != images.size() || rig_poses.empty()) return out;
+  const int P = 6 * (N - 1);
+
+  auto makeFull = [&](const std::vector<Sophus::SE3d>& extr) {
+    std::vector<Sophus::SE3d> full(static_cast<std::size_t>(N));
+    full[0] = Sophus::SE3d();  // identity anchor (cam0 is not optimized)
+    for (int k = 1; k < N; ++k) full[k] = extr[static_cast<std::size_t>(k - 1)];
+    return full;
+  };
+  const std::vector<Sophus::SE3d> full0 = makeFull(extrinsics);
+
+  // Fix the residual structure at the nominal extrinsics: one residual per (frame, sample,
+  // cam_a<cam_b) where both cameras see the ground sample.
+  struct Key { int f; BevSample s; int a; int b; double nominal; };
+  std::vector<Key> keys;
+  std::vector<double> intens(static_cast<std::size_t>(N), 0.0);
+  std::vector<unsigned char> seen(static_cast<std::size_t>(N), 0u);
+  for (std::size_t f = 0; f < rig_poses.size(); ++f) {
+    for (const BevSample& s : samples) {
+      std::fill(seen.begin(), seen.end(), 0u);
+      for (int k = 0; k < N; ++k) {
+        double u = 0.0, v = 0.0;
+        if (projectGroundSample(s, full0[static_cast<std::size_t>(k)] * rig_poses[f],
+                                *cameras[static_cast<std::size_t>(k)], images[f][k]->width,
+                                images[f][k]->height, u, v)) {
+          intens[static_cast<std::size_t>(k)] = images[f][k]->bilinear(u, v);
+          seen[static_cast<std::size_t>(k)] = 1u;
+        }
+      }
+      for (int a = 0; a < N; ++a) {
+        if (!seen[static_cast<std::size_t>(a)]) continue;
+        for (int b = a + 1; b < N; ++b) {
+          if (!seen[static_cast<std::size_t>(b)]) continue;
+          const double d = intens[static_cast<std::size_t>(a)] - intens[static_cast<std::size_t>(b)];
+          keys.push_back({static_cast<int>(f), s, a, b, d});
+          out.residual_ssd += d * d;
+        }
+      }
+    }
+  }
+  out.num_residuals = static_cast<int>(keys.size());
+  if (keys.empty()) return out;
+
+  // Re-evaluate one residual under a (perturbed) extrinsic set.
+  auto evalKey = [&](const std::vector<Sophus::SE3d>& full, const Key& key) -> double {
+    const Image8* ia = images[static_cast<std::size_t>(key.f)][static_cast<std::size_t>(key.a)];
+    const Image8* ib = images[static_cast<std::size_t>(key.f)][static_cast<std::size_t>(key.b)];
+    double ua = 0.0, va = 0.0, ub = 0.0, vb = 0.0;
+    const bool oka = projectGroundSample(key.s, full[static_cast<std::size_t>(key.a)] *
+                                                     rig_poses[static_cast<std::size_t>(key.f)],
+                                         *cameras[static_cast<std::size_t>(key.a)], ia->width,
+                                         ia->height, ua, va);
+    const bool okb = projectGroundSample(key.s, full[static_cast<std::size_t>(key.b)] *
+                                                     rig_poses[static_cast<std::size_t>(key.f)],
+                                         *cameras[static_cast<std::size_t>(key.b)], ib->width,
+                                         ib->height, ub, vb);
+    if (!oka || !okb) return key.nominal;  // ray left the image => no gradient contribution
+    return ia->bilinear(ua, va) - ib->bilinear(ub, vb);
+  };
+
+  // Central-difference Jacobian of the residual vector w.r.t. each extrinsic tangent coord.
+  Eigen::MatrixXd J(out.num_residuals, P);
+  for (int k = 1; k < N; ++k) {
+    for (int c = 0; c < 6; ++c) {
+      Eigen::Matrix<double, 6, 1> dx = Eigen::Matrix<double, 6, 1>::Zero();
+      dx[c] = fd_step;
+      std::vector<Sophus::SE3d> fp = full0, fm = full0;
+      fp[static_cast<std::size_t>(k)] = full0[static_cast<std::size_t>(k)] * Sophus::SE3d::exp(dx);
+      fm[static_cast<std::size_t>(k)] = full0[static_cast<std::size_t>(k)] * Sophus::SE3d::exp(-dx);
+      const int col = 6 * (k - 1) + c;
+      for (int r = 0; r < out.num_residuals; ++r) {
+        const double rp = evalKey(fp, keys[static_cast<std::size_t>(r)]);
+        const double rm = evalKey(fm, keys[static_cast<std::size_t>(r)]);
+        J(r, col) = (rp - rm) / (2.0 * fd_step);
+      }
+    }
+  }
+  out.H = J.transpose() * J;
   return out;
 }
 

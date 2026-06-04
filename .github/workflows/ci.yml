@@ -25,7 +25,7 @@ jobs:
       # configure never re-clones gitlab.com / github.com after the first run.
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install toolchain
         run: |
@@ -33,7 +33,7 @@ jobs:
           sudo apt-get install -y cmake ninja-build ${{ matrix.cc }}
 
       - name: Cache FetchContent deps (Eigen + Sophus)
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: ${{ github.workspace }}/.deps-cache
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
@@ -59,7 +59,7 @@ jobs:
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
       - uses: actions/cache@v4
         with:
@@ -79,7 +79,7 @@ jobs:
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
       - uses: actions/cache@v4
         with:
@@ -98,7 +98,7 @@ jobs:
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++ python3-dev python3-pip
       - run: python3 -m pip install --break-system-packages pytest numpy
       - uses: actions/cache@v4
@@ -106,8 +106,8 @@ jobs:
           path: ${{ github.workspace }}/.deps-cache
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: deps-${{ runner.os }}-
-      - name: Configure with Python bindings
-        run: cmake -S . -B build-py -G Ninja -DCALIBFORGE_PYTHON=ON
+      - name: Configure with Python bindings (strict)
+        run: cmake -S . -B build-py -G Ninja -DCALIBFORGE_PYTHON=ON -DCALIBFORGE_WERROR=ON
       - name: Build the calibforge module
         run: cmake --build build-py --target calibforge_python -j
       - name: pytest
@@ -119,7 +119,7 @@ jobs:
     env:
       FETCHCONTENT_BASE_DIR: ${{ github.workspace }}/.deps-cache
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install toolchain + OpenCV (libopencv-dev brings calib3d + aruco)
         run: |
           sudo apt-get update
@@ -129,10 +129,10 @@ jobs:
           path: ${{ github.workspace }}/.deps-cache
           key: deps-${{ runner.os }}-${{ hashFiles('CMakeLists.txt') }}
           restore-keys: deps-${{ runner.os }}-
-      - name: Configure with OpenCV
+      - name: Configure with OpenCV (strict)
         run: |
-          cmake -S . -B build-ocv -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo 2>&1 | tee cfg.log
-          grep -q "OpenCV .* found" cfg.log
+          cmake -S . -B build-ocv -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DCALIBFORGE_WERROR=ON 2>&1 | tee cfg.log
+          grep -qE "OpenCV [0-9].* found" cfg.log
       - name: Build the OpenCV-gated tests
         run: cmake --build build-ocv --target calibforge_opencv_tests -j
       - name: Run the gated tests (proves ChArUco/AprilGrid end-to-end)
