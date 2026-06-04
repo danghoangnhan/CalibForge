@@ -46,9 +46,13 @@ struct OnlineUavOptions {
   double triangulation_condition_threshold = 1e-5;
   double triangulation_min_parallax_rad = 0.017453292519943295;  // 1.0 deg; reject weak depth
   // Minimum observability confidence (reciprocal condition number of the diagonally-normalized
-  // information matrix) required to emit. A HEALTHY calibration scores ~1e-6 and a degenerate
-  // one ~0 (see solve/observability.hpp:41-44), so this threshold must live near 1e-6 — the
-  // previous 1e-4 default sat ~100x above the healthy regime and silently NEVER emitted.
+  // intrinsic information matrix) required to emit. The HEALTHY scale is geometry-dependent —
+  // measured ~2.1e-4 for a well-excited UAV window (8 poses / 25 landmarks) under the pose-
+  // marginalized intrinsic gate; degenerate windows score ~0 (see solve/observability.hpp). The
+  // 1e-7 default sits a few orders below the
+  // healthy regime (so it emits when constrained) yet far above the degenerate ~0 (so it still
+  // refuses) — unlike the previous 1e-4 default, which sat ABOVE the healthy regime and so
+  // silently NEVER emitted.
   double emit_min_confidence = 1e-7;
   ObservabilityOptions obs_opts{};
   LmOptions lm_opts{};

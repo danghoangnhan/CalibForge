@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 CalibForge is header-only, but the build needs Eigen + Sophus + (optional) OpenCV. The
 top-level `CMakeLists.txt` `FetchContent`s Eigen 3.4 and Sophus automatically; OpenCV is
 gated and the rest of the suite stays green without it. CUDA is detected when `nvcc` is
-present; the host CPU half (~109 tests) is the always-green signal.
+present; the host CPU half (~113 tests) is the always-green signal.
 
 ## 1. Single-camera intrinsic calibration
 

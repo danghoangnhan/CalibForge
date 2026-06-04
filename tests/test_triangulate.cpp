@@ -6,6 +6,7 @@
 #include <Eigen/Dense>
 
 #include "calibforge/calibrate_single.hpp"  // View
+#include "calibforge/double_sphere_camera.hpp"
 #include "calibforge/feature_tracker.hpp"
 #include "calibforge/pinhole_camera.hpp"
 #include "calibforge/triangulate.hpp"
@@ -13,6 +14,7 @@
 #include "sophus/se3.hpp"
 
 using calibforge::CameraModel;
+using calibforge::DoubleSphereCamera;
 using calibforge::PinholeCamera;
 using calibforge::Vec2;
 using calibforge::Vec3;
@@ -111,6 +113,75 @@ CF_TEST(triangulate_linear_rejects_rank_deficient_zero_baseline) {
   const TriangulationResult r =
       calibforge::detect::triangulateLinear(uvs, cams, T_world_cam, /*cond=*/1e-3);
   CF_EXPECT_TRUE(!r.ok);
+}
+
+CF_TEST(triangulate_linear_accepts_wide_fov_landmark_with_negative_camera_z) {
+  // The model-agnostic cheirality (X_cam . unproject_ray > 0) must ACCEPT a landmark genuinely
+  // in front of a >180deg-FOV lens even when its camera-frame z is NEGATIVE — the case the old
+  // X_cam.z()>0 check wrongly rejected. A PinholeCamera cannot exercise this (its unproject rays
+  // always have z>0, so dot>0 <=> z>0); use a wide-FOV double-sphere lens whose unproject can
+  // return a backward-tilted ray.
+  DoubleSphereCamera cam(200.0, 200.0, 160.0, 120.0, /*xi=*/0.3, /*alpha=*/0.6);
+  // Landmark in cam0's frame: in front of the double-sphere surface (projectValid) yet z<0.
+  const Eigen::Vector3d X_c0 = 4.0 * Eigen::Vector3d(0.9, 0.0, -0.2).normalized();
+  CF_EXPECT_TRUE(cam.projectValid(Vec3{X_c0.x(), X_c0.y(), X_c0.z()}));
+  CF_EXPECT_TRUE(X_c0.z() < 0.0);
+  const Vec3 X_world{X_c0.x(), X_c0.y(), X_c0.z()};  // world == cam0 frame (identity pose)
+
+  std::vector<Sophus::SE3d> T_world_cam = {
+      Sophus::SE3d(),                                                            // cam0 = identity
+      Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(0.4, 0.0, 0.0)),              // x baseline
+      Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(0.0, 0.3, 0.0))};             // y baseline
+  std::vector<Vec2> uvs;
+  std::vector<const CameraModel*> cams;
+  for (const Sophus::SE3d& T : T_world_cam) {
+    const Eigen::Vector3d Xc = T.inverse() * X_c0;
+    CF_EXPECT_TRUE(Xc.z() < 0.0);  // negative camera-frame z in EVERY view (old z>0 would reject)
+    uvs.push_back(cam.project(Vec3{Xc.x(), Xc.y(), Xc.z()}));
+    cams.push_back(&cam);
+  }
+
+  const TriangulationResult r =
+      calibforge::detect::triangulateLinear(uvs, cams, T_world_cam);
+  CF_EXPECT_TRUE(r.ok);  // accepted via the model-agnostic dot-product cheirality
+  CF_EXPECT_NEAR(r.point_world[0], X_world[0], 1e-4);
+  CF_EXPECT_NEAR(r.point_world[1], X_world[1], 1e-4);
+  CF_EXPECT_NEAR(r.point_world[2], X_world[2], 1e-4);
+}
+
+CF_TEST(triangulate_linear_conditioning_gate_rejects_when_threshold_exceeds_condition) {
+  // The zero-baseline test now returns at the PARALLAX gate (parallax 0 < 1deg) BEFORE the
+  // conditioning gate, leaving `out.condition < condition_threshold` uncovered with parallax
+  // passing. Exercise it directly: a well-parallaxed point has a finite condition in (0,1];
+  // raising condition_threshold ABOVE that value (with the parallax floor wide open) must reject
+  // via the conditioning gate — catching a flipped comparison or an sv(0)/sv(last) inversion the
+  // parallax-shadowed zero-baseline test cannot.
+  PinholeCamera cam(500.0, 500.0, 320.0, 240.0);
+  const Vec3 X_world{0.5, -0.2, 4.0};
+  std::vector<Sophus::SE3d> T_world_cam = {
+      Sophus::SE3d(Sophus::SO3d(), Eigen::Vector3d(0.0, 0.0, 0.0)),
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(0.02, -0.01, 0.0)),
+                   Eigen::Vector3d(0.3, 0.0, 0.05)),
+      Sophus::SE3d(Sophus::SO3d::exp(Eigen::Vector3d(-0.01, 0.03, 0.005)),
+                   Eigen::Vector3d(-0.25, 0.1, -0.05))};
+  std::vector<Vec2> uvs;
+  std::vector<const CameraModel*> cams;
+  for (const Sophus::SE3d& T : T_world_cam) {
+    const Eigen::Vector3d Xc = T.inverse() * Eigen::Vector3d(X_world[0], X_world[1], X_world[2]);
+    uvs.push_back(cam.project(Vec3{Xc.x(), Xc.y(), Xc.z()}));
+    cams.push_back(&cam);
+  }
+
+  // Parallax floor wide open (0) so ONLY the conditioning gate can reject.
+  const TriangulationResult ok = calibforge::detect::triangulateLinear(
+      uvs, cams, T_world_cam, /*condition_threshold=*/1e-9, /*min_parallax_rad=*/0.0);
+  CF_EXPECT_TRUE(ok.ok);
+  CF_EXPECT_TRUE(ok.condition > 0.0 && ok.condition <= 1.0);  // valid rcond range (catches inversion)
+
+  // Same geometry, threshold raised above the measured condition -> conditioning gate rejects.
+  const TriangulationResult rej = calibforge::detect::triangulateLinear(
+      uvs, cams, T_world_cam, /*condition_threshold=*/ok.condition * 10.0, /*min_parallax_rad=*/0.0);
+  CF_EXPECT_TRUE(!rej.ok);
 }
 
 CF_TEST(triangulate_linear_rejects_low_parallax_even_when_conditioning_passes) {

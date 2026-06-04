@@ -158,7 +158,7 @@ vs the reference, and `weak_parameters` (named directions the gate flagged).
 | What | When built |
 |---|---|
 | `calibforge_core` (header-only INTERFACE) | always |
-| `calibforge_tests` (~109 cases) | always (host-only, no CUDA needed) |
+| `calibforge_tests` (~113 cases host-only) | always (host-only, no CUDA needed) |
 | `calibforge_opencv_tests` | when OpenCV is found |
 | `calibforge_cuda` + `calibforge_arch_probe` (multi-arch matrix) | when `nvcc` is found |
 | `calibforge_python` | with `-DCALIBFORGE_PYTHON=ON` |

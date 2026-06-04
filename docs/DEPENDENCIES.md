@@ -26,7 +26,7 @@ Every new third-party dependency must be added to the table below **with its lic
 | **CV-CUDA** | GPU image primitives | Apache-2.0 | ✅ **vendor/depend** | server *apply* path; not yet wired (no CUDA host) |
 | **NVIDIA VPI** | Runtime undistort (LDC) | Proprietary SDK (apps free to redistribute) | ✅ depend (link) (in tree, gated) | PVA/VIC **Jetson-only**; CUDA backend on server. `apply/vpi_ldc.hpp` + `apply/vpi_coeffs.hpp` ship as gated bindings; CPU warp-map is the always-on parity reference |
 | **TensorRT** | Learned components | OSS parts Apache-2.0; **core SDK proprietary (EULA)** | ⚠️ depend; **don't redistribute the runtime** | OSS plugins/parsers OK to vendor; not yet used |
-| **OpenCalib SurroundCameraCalib** | Online surround-view baseline | Apache-2.0 | ✅ **vendor/depend** | BEV photometric random-search; pending (epic #24 follow-up) |
+| **OpenCalib SurroundCameraCalib** | Online surround-view baseline | Apache-2.0 | ✅ **re-implemented in-tree** | BEV photometric random-search math re-implemented (`detect/bev_photometric.hpp`, not vendored); shipped |
 | **iKalibr** | RS / cam-IMU continuous-time formulation | BSD-3 | ✅ **vendor/depend** (math re-implemented) | Forster preintegration math re-implemented in `solve/imu_preintegrator.hpp` + `imu_preintegration_residual.hpp` — never copied verbatim |
 | **Sophus** | SE(3)/SO(3) C++ core | MIT | ✅ **vendor/depend** (in tree) | Header-only via FetchContent; v1.22.10 pinned in `CMakeLists.txt` |
 | **manif** | SE(3)/SO(3) C++ core | MIT | ✅ **vendor/depend** | alternative to Sophus; not currently used |
@@ -37,7 +37,7 @@ Every new third-party dependency must be added to the table below **with its lic
 | **Eigen** | Host-side math | MPL-2.0 | ✅ **vendor/depend** (in tree) | Header-only via FetchContent; 3.4.0 pinned |
 | **pybind11** | Python bindings | BSD-3 | ✅ **vendor/depend** (in tree) | FetchContent; v2.13.6 pinned; gated by `-DCALIBFORGE_PYTHON=ON`; `python` CI job |
 | **basalt-headers** | DS/EUCM/KB C++ reference | BSD-3 (verify) | ✅ vendor (math re-implemented) | DS and EUCM models implemented in-tree against this and the Usenko paper; not vendored as code |
-| **puzzlepaint/camera_calibration** | Generic per-pixel B-spline model | own code BSD-3; deps OpenGV/SuiteSparse **GPL/LGPL** | ⚠️ **first-party code only** | for v1.0 generic model; transitive copyleft deps to be replaced; deferred |
+| **puzzlepaint/camera_calibration** | Generic per-pixel B-spline model | own code BSD-3; deps OpenGV/SuiteSparse **GPL/LGPL** | ⚠️ **math re-implemented in-tree** | model math re-implemented (`core/generic_bspline_camera.hpp`, no code copied; transitive copyleft deps not used); shipped, pipeline wiring pending |
 | **DeepLM** | GPU BA (design doc's option) | **GPLv3** | ⛔ **reference-only / oracle** | dropped — copyleft poisons a permissive library |
 | **Kalibr** | cam-IMU calibration | GPL-family | ⛔ **reference-only** | read the math, re-implement |
 | **OpenVINS** | Online VINS self-cal | GPL | ⛔ **reference-only** | most edge-suitable paradigm — re-implement |

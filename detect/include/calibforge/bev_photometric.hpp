@@ -107,6 +107,9 @@ inline BevAgreementResult bevAgreementCost(
   BevAgreementResult res;
   const int N = static_cast<int>(cameras.size());
   if (N < 2) return res;
+  if (static_cast<int>(images.size()) != N ||
+      static_cast<int>(T_ck_c0_with_identity_first.size()) != N)
+    return res;  // size contract: one image + one extrinsic (identity-first) per camera; guards images[k]
 
   // Per-sample scratch, sized to N and reused across samples (the charter targets N-rig /
   // fleet, so the buffers must scale with N — a fixed 16-wide array silently truncated and,
@@ -188,6 +191,8 @@ inline BevRandomSearchResult bevRandomSearchExtrinsics(
   if (N < 2) return out;
   if (extrinsics_init.size() + 1 != static_cast<std::size_t>(N)) return out;
   if (rig_poses.size() != images.size() || rig_poses.empty()) return out;
+  for (const std::vector<const Image8*>& imf : images)
+    if (imf.size() != static_cast<std::size_t>(N)) return out;  // per-frame width; guards images[f][k]
 
   auto evalAvg = [&](const std::vector<Sophus::SE3d>& extr) {
     std::vector<Sophus::SE3d> full(static_cast<std::size_t>(N));
@@ -275,6 +280,8 @@ inline BevInformation bevInformationMatrix(
   if (N < 2) return out;
   if (extrinsics.size() + 1 != static_cast<std::size_t>(N)) return out;
   if (rig_poses.size() != images.size() || rig_poses.empty()) return out;
+  for (const std::vector<const Image8*>& imf : images)
+    if (imf.size() != static_cast<std::size_t>(N)) return out;  // per-frame width; guards images[f][k]
   const int P = 6 * (N - 1);
 
   auto makeFull = [&](const std::vector<Sophus::SE3d>& extr) {
@@ -287,7 +294,7 @@ inline BevInformation bevInformationMatrix(
 
   // Fix the residual structure at the nominal extrinsics: one residual per (frame, sample,
   // cam_a<cam_b) where both cameras see the ground sample.
-  struct Key { int f; BevSample s; int a; int b; double nominal; };
+  struct Key { int f; BevSample s; int a; int b; };
   std::vector<Key> keys;
   std::vector<double> intens(static_cast<std::size_t>(N), 0.0);
   std::vector<unsigned char> seen(static_cast<std::size_t>(N), 0u);
@@ -308,8 +315,8 @@ inline BevInformation bevInformationMatrix(
         for (int b = a + 1; b < N; ++b) {
           if (!seen[static_cast<std::size_t>(b)]) continue;
           const double d = intens[static_cast<std::size_t>(a)] - intens[static_cast<std::size_t>(b)];
-          keys.push_back({static_cast<int>(f), s, a, b, d});
-          out.residual_ssd += d * d;
+          keys.push_back({static_cast<int>(f), s, a, b});
+          out.residual_ssd += d * d;  // residual at the NOMINAL extrinsics (2*final_cost for the gate)
         }
       }
     }
@@ -317,8 +324,9 @@ inline BevInformation bevInformationMatrix(
   out.num_residuals = static_cast<int>(keys.size());
   if (keys.empty()) return out;
 
-  // Re-evaluate one residual under a (perturbed) extrinsic set.
-  auto evalKey = [&](const std::vector<Sophus::SE3d>& full, const Key& key) -> double {
+  // Re-evaluate one residual under a (perturbed) extrinsic set. `valid` is set false when either
+  // camera's perturbed ray leaves its image — the residual has no defined value there.
+  auto evalKey = [&](const std::vector<Sophus::SE3d>& full, const Key& key, bool& valid) -> double {
     const Image8* ia = images[static_cast<std::size_t>(key.f)][static_cast<std::size_t>(key.a)];
     const Image8* ib = images[static_cast<std::size_t>(key.f)][static_cast<std::size_t>(key.b)];
     double ua = 0.0, va = 0.0, ub = 0.0, vb = 0.0;
@@ -330,11 +338,15 @@ inline BevInformation bevInformationMatrix(
                                                      rig_poses[static_cast<std::size_t>(key.f)],
                                          *cameras[static_cast<std::size_t>(key.b)], ib->width,
                                          ib->height, ub, vb);
-    if (!oka || !okb) return key.nominal;  // ray left the image => no gradient contribution
+    valid = oka && okb;
+    if (!valid) return 0.0;
     return ia->bilinear(ua, va) - ib->bilinear(ub, vb);
   };
 
-  // Central-difference Jacobian of the residual vector w.r.t. each extrinsic tangent coord.
+  // Central-difference Jacobian of the residual vector w.r.t. each extrinsic tangent coord. When
+  // EITHER perturbed side leaves the image the central difference is undefined, so we set the
+  // column to 0 (true "no gradient there", as documented) rather than substituting a one-sided
+  // difference against the nominal residual — which would yield a biased half-derivative g/2.
   Eigen::MatrixXd J(out.num_residuals, P);
   for (int k = 1; k < N; ++k) {
     for (int c = 0; c < 6; ++c) {
@@ -345,9 +357,10 @@ inline BevInformation bevInformationMatrix(
       fm[static_cast<std::size_t>(k)] = full0[static_cast<std::size_t>(k)] * Sophus::SE3d::exp(-dx);
       const int col = 6 * (k - 1) + c;
       for (int r = 0; r < out.num_residuals; ++r) {
-        const double rp = evalKey(fp, keys[static_cast<std::size_t>(r)]);
-        const double rm = evalKey(fm, keys[static_cast<std::size_t>(r)]);
-        J(r, col) = (rp - rm) / (2.0 * fd_step);
+        bool vp = false, vm = false;
+        const double rp = evalKey(fp, keys[static_cast<std::size_t>(r)], vp);
+        const double rm = evalKey(fm, keys[static_cast<std::size_t>(r)], vm);
+        J(r, col) = (vp && vm) ? (rp - rm) / (2.0 * fd_step) : 0.0;
       }
     }
   }
