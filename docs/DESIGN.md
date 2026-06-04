@@ -208,7 +208,7 @@ C++ core mirrors this; ROS2 node wraps `online.ExtrinsicTracker`.
 - **Build (your IP):** the unified pipeline orchestration, the **calibration-specific residual blocks** (distortion, rolling-shutter, cam-IMU), **targetless/online** logic, the **VPI export bridge**, and the **single-build edge↔server packaging**.
 - **License audit (do before coding):** confirm nvTorchCam and MegBA licenses permit your distribution model; VPI/TensorRT ship under NVIDIA SDK terms (fine on Jetson, check redistribution).
 
-> **⚠️ Research revision (mid-2026):** the license audit is done — see [`DEPENDENCIES.md`](./DEPENDENCIES.md). DeepLM is dropped (GPLv3); the capable cam-IMU/RS tools (Kalibr, OpenVINS, MVIS, Ctrl-VIO) are GPL → reference-only; iKalibr (BSD-3) and OpenCalib SurroundCameraCalib (Apache-2.0) are the permissive borrows for those layers.
+> **⚠️ Research revision (mid-2026; license + form re-audited 2026-06-04):** see [`DEPENDENCIES.md`](./DEPENDENCIES.md). DeepLM/OpenVINS/MVIS/Ctrl-VIO are GPL → reference-only. **Kalibr is BSD-3 (not GPL)** but a ROS app with a GPL-transitive solver dep, and iKalibr (BSD/Apache) + OpenCalib SurroundCameraCalib (Apache-2.0) are permissive **but ROS / CLI in form** — so all of these cam-IMU/RS/surround layers are **re-implemented from the math**, not vendored as code. The reuse-**as-is** borrows are the C++ building blocks (Ceres/GTSAM/Graphite, basalt-headers, Sophus/manif, CV-CUDA).
 
 ### 12. Roadmap
 
