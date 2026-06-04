@@ -14,7 +14,7 @@ ctest --test-dir build --output-on-failure
 CalibForge is header-only, but the build needs Eigen + Sophus + (optional) OpenCV. The
 top-level `CMakeLists.txt` `FetchContent`s Eigen 3.4 and Sophus automatically; OpenCV is
 gated and the rest of the suite stays green without it. CUDA is detected when `nvcc` is
-present; the host CPU half (~113 tests) is the always-green signal.
+present; the host CPU half (~114 tests; 122 with CUDA) is the always-green signal.
 
 ## 1. Single-camera intrinsic calibration
 
@@ -220,6 +220,19 @@ cmake --build build --target calibforge_bench
 ./build/calibforge_bench > bench.csv
 ```
 
-The CSV reports `cpu_ms_median`, `cpu_iters_median`, `final_cost_median` per problem size.
-GPU rows (PyPose / Graphite / Ceres comparison) require a CUDA / Jetson host — see
-`docs/SPIKES.md` §D.1 for the deferred plan.
+The CSV reports `cpu_ms_median`, `cpu_iters_median`, `final_cost_median` per problem size. On a
+CUDA host it additionally emits `dense_single` **CPU-vs-GPU** rows for the native CUDA dense LM
+back-end (`gpu_ms_median`, `gpu_speedup`, per-backend iteration counts) — the crossover is
+measured, not assumed (rule 1: CPU wins small single calibrations; GPU pulls ahead at ~8 views on
+an RTX 5090). See [`docs/BENCHMARKS.md`](BENCHMARKS.md) for the committed numbers and
+[`docs/SPIKES.md` §E](SPIKES.md) for the firsthand RTX 5090 spike. The PyPose / Graphite / MegBA
+back-ends + the Jetson↔server parity test remain deferred (§D.2/§D.3).
+
+To run a solve on the GPU back-end explicitly:
+
+```cpp
+calibforge::DenseProblem problem;
+// ... addParameterBlock / addResidualBlock ...
+problem.solveLm(calibforge::LmOptions{}, calibforge::SolverBackend::GpuCuda);
+// Falls back to the host Eigen path automatically when built without CUDA.
+```

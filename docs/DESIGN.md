@@ -8,7 +8,7 @@
 
 **Status:** Design draft v0.1 · Target: research preview → v1.0 · Owner: Daniel Tu
 
-> **Implementation status (v0.5 in progress):** §12 roadmap rows v0.1 through v0.5 are implemented and tested on a CUDA-less CI matrix (gcc + clang + Werror + OpenCV-gated + python). The v1.0 row — generic per-pixel model, GPU solver back-ends, hardened edge↔server packaging + benchmark suite — is partly stubbed (CPU-side determinism test + capability scaffolding) and otherwise deferred pending a CUDA / Jetson host. See the repo root `README.md` for the current capability matrix and `docs/SPIKES.md` §D for the deferred items.
+> **Implementation status (v0.5 in progress):** §12 roadmap rows v0.1 through v0.5 are implemented and tested on a CUDA-less CI matrix (gcc + clang + Werror + OpenCV-gated + python). The v1.0 row is partly delivered: a **native CUDA dense LM solver back-end (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER) is implemented and validated firsthand on an RTX 5090 / sm_120 host** (the CPU-vs-GPU calibration-regime crossover is now measured, not assumed — `docs/SPIKES.md` §E, `docs/BENCHMARKS.md`). The generic per-pixel model (CPU header-only) + CPU determinism test ship too. Still deferred pending the borrows / a Jetson host: the PyPose/Graphite/MegBA back-ends, hardened edge↔server packaging, and the Jetson↔server FP32/bf16↔FP64 numerical-parity test. See the repo root `README.md` for the current capability matrix and `docs/SPIKES.md` §D/§E.
 
 ---
 
@@ -219,7 +219,7 @@ C++ core mirrors this; ROS2 node wraps `online.ExtrinsicTracker`.
 | **v0.3** | Multi-cam rig + hand-eye; ROS2 node | ✅ shipped (N-rig + hand-eye + ROS2 node + pybind11) |
 | **v0.4** | Rolling-shutter + cam-IMU (UAV focus); Isaac Sim synthetic validation | ✅ shipped (RS readout + cam-IMU rotation init + full Forster preintegration factor; Isaac Sim deferred to hardware) |
 | **v0.5** | Online/targetless recalibration prototype (UAV + surround-view) | ✅ shipped (`OnlineExtrinsicTracker` + `OnlineIntrinsicTracker` behind the observability + 6-axis motion-excitation gate; `FeatureTracker` targetless source; BEV photometric + `OnlineUav` + `OnlineSurroundRig` orchestrators shipped & tested) |
-| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs | ⏳ partial — generic B-spline model (CPU, header-only) + CPU-runnable determinism test + CPU regime benchmark + accurate README/CLAUDE.md shipped; GPU solver back-ends + CPU-vs-GPU regime rows + Jetson↔server FP32/bf16↔FP64 parity test + the B-spline's pipeline wiring/wide-FOV validation all deferred pending a CUDA / Jetson host |
+| **v1.0** | Generic per-pixel model, hardened edge build, full benchmark suite, docs | ⏳ partial — generic B-spline model (CPU, header-only) + CPU determinism test + accurate README/CLAUDE.md shipped; **native CUDA dense LM solver (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER) implemented + validated on an RTX 5090, with the CPU-vs-GPU regime rows now measured (§E / BENCHMARKS.md)**; still deferred: PyPose/Graphite/MegBA back-ends, Jetson↔server FP32/bf16↔FP64 parity test, and the B-spline's pipeline wiring/wide-FOV validation (need the borrows / a Jetson host) |
 
 ### 13. Risks
 - **BA back-end fit:** MegBA is tuned for SfM-scale problems; calibration problems are smaller/differently structured — may need kernel specialization (mitigate: keep solver interface abstract).

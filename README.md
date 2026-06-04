@@ -2,7 +2,7 @@
 
 **A unified, NVIDIA-accelerated geometric camera-calibration library that both *estimates* and *applies* calibration across pinhole, fisheye, and generic models — built once, deployed on both edge (Jetson) and server.**
 
-> **Status:** v0.5 in progress. The CPU calibration core, the observability-gated online tracker (the project differentiator), the IMU preintegration factor, the runtime undistort path, and the generic per-pixel B-spline model (CPU, header-only) are implemented and tested. The GPU solver back-ends and the edge↔server numerical-parity test are deferred to v1.0 pending a CUDA / Jetson host; the B-spline model's pipeline wiring + wide-FOV validation are likewise pending.
+> **Status:** v0.5 in progress, with v1.0 GPU work landing. The CPU calibration core, the observability-gated online tracker (the project differentiator), the IMU preintegration factor, the runtime undistort path, and the generic per-pixel B-spline model (CPU, header-only) are implemented and tested. A **native CUDA dense LM solver back-end (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER) is implemented and validated firsthand on an RTX 5090 (sm_120) host** — the CPU-vs-GPU calibration-regime crossover is now measured (see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)), not assumed. Still pending: the PyPose/Graphite/MegBA borrows, the Jetson↔server numerical-parity test, and the B-spline model's pipeline wiring + wide-FOV validation.
 
 ## Why it exists
 
@@ -27,7 +27,8 @@ Every building block of geometric calibration is public, but **no single library
 | Per-parameter uncertainty + observability gate (the differentiator) | ✅ | ✅ |
 | ROS `CameraInfo` · Isaac Perceptor URDF · OpenCV YAML · Kalibr camchain | ✅ | ✅ |
 | Python bindings (pybind11) · ROS2 node | ✅ | ✅ |
-| GPU solver back-end (PyPose primary, Graphite edge, Ceres CPU oracle) | — | ⏳ |
+| Native CUDA dense LM solver back-end (cuBLAS SYRK/GEMV + cuSOLVER Cholesky) | — | ✅ |
+| GPU solver borrows — PyPose (batched/sparse) · Graphite (edge/bf16) · MegBA (server) | — | ⏳ |
 | Edge↔server numerical-parity test (FP32/bf16 vs FP64; Jetson vs server) | — | ⏳ |
 
 Scope is strictly **geometric** (no photometric / color / structured-light).
@@ -56,7 +57,10 @@ CLAUDE.md           Architecture + the non-obvious rules that govern the code
 CUDA toolkit optional — the build degrades gracefully to a host-only configuration when `nvcc` is absent (CI runs this way). Multi-arch single source for the CUDA half:
 
 ```bash
-cmake -S . -B build -G Ninja -DCMAKE_CUDA_ARCHITECTURES="72;80;86;87;89;90"
+# Omit -DCMAKE_CUDA_ARCHITECTURES to use the default matrix (72;80;86;87;89;90;90-virtual).
+# The trailing 90-virtual embeds compute_90 PTX that JIT-forwards onto newer archs such as
+# sm_120 / Blackwell on a CUDA 12.0 toolkit (validated on an RTX 5090 — docs/SPIKES.md §E).
+cmake -S . -B build -G Ninja -DCMAKE_CUDA_ARCHITECTURES="72;80;86;87;89;90;90-virtual"
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```
@@ -77,10 +81,10 @@ Optional flags:
 ## Design at a glance
 
 - **Camera-model core** — adopts the nvTorchCam interface design (Apache-2.0); adds double-sphere & EUCM that nvTorchCam / Kornia / PyTorch3D do not ship. Analytic Jacobians on hot paths (FD-validated in tests).
-- **Solver** — solver-agnostic `Problem` / `ResidualBlock` interface. CPU `DenseProblem` (manifold LM with FastTriggs robust loss) is the default; GPU back-ends (PyPose / Graphite) are tracked for v1.0 once a CUDA host benchmarks the regimes where they actually pay (CLAUDE.md rule 1).
+- **Solver** — solver-agnostic `Problem` / `ResidualBlock` interface. CPU `DenseProblem` (manifold LM with FastTriggs robust loss) is the default; a native CUDA dense LM back-end (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER) offloads the per-iteration solve and is selected explicitly. Measured on an RTX 5090, the GPU wins only past ~8 views — so CPU stays the default for small single calibrations (CLAUDE.md rule 1). The PyPose / Graphite / MegBA borrows remain tracked for the batched/sparse regimes.
 - **Apply** — VPI LDC export on Jetson (PVA/VIC), CUDA / CV-CUDA on server (CLAUDE.md rule 5).
 - **Online / targetless** — `OnlineIntrinsicTracker` and `OnlineExtrinsicTracker` both gate emission on `assessObservability` + `parameterUncertainty` + a 6-axis motion-excitation check. **Never silently emit calibration parameters online** (CLAUDE.md rule 2).
-- **One CUDA source → server + Jetson** via the `-gencode` arch matrix.
+- **One CUDA source → server + Jetson** via the `-gencode` arch matrix, with a `90-virtual` PTX entry that JIT-forwards onto archs newer than the toolkit (e.g. sm_120 / Blackwell) — validated on an RTX 5090.
 
 See [`docs/RESEARCH.md`](docs/RESEARCH.md) for the full cited rationale and [`docs/DESIGN.md`](docs/DESIGN.md) for the vision.
 
