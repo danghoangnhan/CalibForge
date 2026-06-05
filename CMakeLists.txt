@@ -193,6 +193,7 @@ add_executable(calibforge_tests
   tests/test_ros_isaac_emit.cpp
   tests/test_warp_map.cpp
   tests/test_calibrate_stereo.cpp
+  tests/test_rectify_stereo.cpp
   tests/test_detect.cpp
   tests/test_remap.cpp
   tests/test_calibrate_rig.cpp
@@ -249,6 +250,7 @@ if(CALIBFORGE_HAS_CUDA)
     ${CMAKE_CURRENT_SOURCE_DIR}/core/include
     ${CMAKE_CURRENT_SOURCE_DIR}/apply/include
     ${CMAKE_CURRENT_SOURCE_DIR}/solve/include)
+  target_link_libraries(calibforge_cuda PRIVATE calibforge_eigen)  # warp_map.hpp uses Eigen (R_rect)
   set_target_properties(calibforge_cuda PROPERTIES
     CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}"
     CUDA_SEPARABLE_COMPILATION ON)

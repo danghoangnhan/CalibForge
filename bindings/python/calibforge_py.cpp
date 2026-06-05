@@ -23,6 +23,7 @@
 #include "calibforge/kannala_brandt_camera.hpp"
 #include "calibforge/observability.hpp"
 #include "calibforge/pinhole_camera.hpp"
+#include "calibforge/rectify_stereo.hpp"
 #include "sophus/se3.hpp"
 
 namespace py = pybind11;
@@ -216,4 +217,32 @@ PYBIND11_MODULE(calibforge, m) {
       py::arg("grid"), py::arg("init_model"), py::arg("init_intrinsics"),
       py::arg("object_points"), py::arg("image_points"), py::arg("poses_init"),
       py::arg("max_iter") = 100, py::arg("optimize_poses") = true);
+
+  // Stereo rectification: from a calibrated pair (two intrinsics + extrinsic T_cam1_cam0) produce
+  // the rectifying rotations R0/R1, shared rectified K, the ROS projection matrices P0/P1, and the
+  // disparity->depth Q. Returns a dict (Eigen marshals to numpy via pybind11/eigen.h).
+  m.def(
+      "compute_stereo_rectification",
+      [](const std::string& model0, const std::vector<double>& intrinsics0,
+         const std::string& model1, const std::vector<double>& intrinsics1,
+         const Eigen::Matrix4d& T_cam1_cam0, int width, int height) {
+        const Eigen::VectorXd i0 = Eigen::Map<const Eigen::VectorXd>(
+            intrinsics0.data(), static_cast<Eigen::Index>(intrinsics0.size()));
+        const Eigen::VectorXd i1 = Eigen::Map<const Eigen::VectorXd>(
+            intrinsics1.data(), static_cast<Eigen::Index>(intrinsics1.size()));
+        const StereoRectification rect = computeStereoRectification(
+            i0, i1, Sophus::SE3d(T_cam1_cam0), width, height, factoryFor(model0),
+            factoryFor(model1));
+        py::dict d;
+        d["R0"] = rect.R0;
+        d["R1"] = rect.R1;
+        d["K_rect"] = std::vector<double>(rect.K_rect.begin(), rect.K_rect.end());
+        d["P0"] = std::vector<double>(rect.P0.begin(), rect.P0.end());
+        d["P1"] = std::vector<double>(rect.P1.begin(), rect.P1.end());
+        d["Q"] = std::vector<double>(rect.Q.begin(), rect.Q.end());
+        d["baseline"] = rect.baseline;
+        return d;
+      },
+      py::arg("model0"), py::arg("intrinsics0"), py::arg("model1"), py::arg("intrinsics1"),
+      py::arg("T_cam1_cam0"), py::arg("width"), py::arg("height"));
 }
