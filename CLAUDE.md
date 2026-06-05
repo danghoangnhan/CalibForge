@@ -53,6 +53,7 @@ cmake --build build -j
 |---|---|
 | Jetson Orin (primary edge) | `sm_87` |
 | Jetson Xavier (legacy) | `sm_72` |
+| Jetson Nano / JetPack 4 (CUDA 10.2) | **host-only** — CUDA < 11 predates `sm_80+`/`compute_90` + C++17 device code, so the GPU half is auto-skipped (CMake degrades cleanly); CPU core + undistort + VPI-LDC export still build |
 | Server (A100/H100/L4) | `sm_80/90/89` |
 | Desktop dev (RTX) | `sm_86/89` |
 | Blackwell (RTX 50xx / Grace-Blackwell GB10 / newer than the toolkit) | `compute_90` PTX via `90-virtual` → JIT (validated on RTX 5090 `sm_120`/CUDA 12.0 **and** GB10 `sm_121`/CUDA 13.0, RULE #6) |
