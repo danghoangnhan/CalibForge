@@ -149,3 +149,25 @@ def test_calibrate_generic_bspline_fits_wide_fov():
             errs.append(((got[0] - ref[0]) ** 2 + (got[1] - ref[1]) ** 2) ** 0.5)
     assert len(errs) > 0
     assert max(errs) < 0.1  # sub-0.1px functional reproduction of the source field
+
+
+def test_stereo_rectification():
+    # Calibrated pair: small relative rotation + ~10 cm x-baseline (Xc1 = R*Xc0 + t).
+    T = se3([0.02, -0.01, 0.015], [-0.10, 0.005, 0.002])
+    rect = cf.compute_stereo_rectification(
+        "pinhole", [500.0, 500.0, 320.0, 240.0],
+        "pinhole", [510.0, 508.0, 322.0, 238.0],
+        T, 640, 480)
+    b = (0.10 ** 2 + 0.005 ** 2 + 0.002 ** 2) ** 0.5
+    assert abs(rect["baseline"] - b) < 1e-9
+    f = rect["K_rect"][0]
+    assert abs(rect["P1"][3] - (-f * b)) < 1e-6   # right-camera baseline term
+    R0 = np.asarray(rect["R0"])
+    assert R0.shape == (3, 3)
+    assert np.max(np.abs(R0 @ R0.T - np.eye(3))) < 1e-9   # orthonormal
+    assert abs(np.linalg.det(R0) - 1.0) < 1e-9
+    # Q maps disparity back to depth Z = f*b/disp.
+    Q = np.asarray(rect["Q"]).reshape(4, 4)
+    Z = 2.5
+    xyzw = Q @ np.array([350.0, 250.0, f * b / Z, 1.0])
+    assert abs(xyzw[2] / xyzw[3] - Z) < 1e-9

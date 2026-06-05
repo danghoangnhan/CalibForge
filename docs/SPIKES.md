@@ -152,7 +152,7 @@ Same forward-compat story as §E (RTX 5090 / sm_120) but on a **different toolki
 
 | Check | Result |
 |---|---|
-| Full suite built with the DEFAULT matrix (tops out at `compute_90` PTX, **no** native sm_121) | ✅ **all 131 tests pass on the GB10 via PTX JIT** — the GPU dense solver + FP32 parity run on sm_121 through the JIT'd `compute_90` PTX |
+| Full suite built with the DEFAULT matrix (tops out at `compute_90` PTX, **no** native sm_121) | ✅ **all 137 tests pass on the GB10 via PTX JIT** — the GPU dense solver + FP32 parity run on sm_121 through the JIT'd `compute_90` PTX |
 | Native build (`-DCMAKE_CUDA_ARCHITECTURES=native`, sm_121 SASS) | ✅ also 131/131 — both paths agree |
 
 ### F.3 §D.3 — FP32 ↔ FP64 numerical parity (the deferred edge-precision question) — ✅ measured
