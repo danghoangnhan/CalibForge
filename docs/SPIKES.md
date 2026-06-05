@@ -2,7 +2,7 @@
 
 Empirical checks of the [`RESEARCH.md`](./RESEARCH.md) borrow decisions, run on the dev host on **2026-06-01**. Goal: don't trust the papers alone — verify the load-bearing claims firsthand, and honestly record what could **not** be verified here.
 
-> **Implementation status (v0.5 in progress).** Everything verified in §A–C below is reflected in the shipped code. **§D.1 (GPU-vs-CPU on the calibration-sized regime) has now been run firsthand on a server CUDA host (RTX 5090 / CUDA 12.0) — see [§E](#e-cuda-host-spikes--run-firsthand-on-an-rtx-5090--cuda-120).** The remaining §D items are still deferred: the **CPU subset of §D.3 (run-to-run bit-identical CPU determinism)** ships as `tests/test_determinism.cpp`, but the *Jetson*-vs-server + FP32/bf16 vs FP64 parity it scaffolds (§D.3), the Graphite build (§D.2), and the VPI-LDC Jetson PVA/VIC check (§D.4) all still wait on a Jetson / second GPU. See repo root `README.md` for the current capability matrix.
+> **Implementation status (v0.5 in progress).** Everything verified in §A–C below is reflected in the shipped code. **§D.1 (GPU-vs-CPU on the calibration-sized regime) has been run firsthand on TWO CUDA hosts — a server RTX 5090 / CUDA 12.0 ([§E](#e-cuda-host-spikes--run-firsthand-on-an-rtx-5090--cuda-120)) and an edge-class Grace-Blackwell GB10 / aarch64 / sm_121 / CUDA 13.0 ([§F](#f-second-cuda-host--grace-blackwell-gb10--run-firsthand-on-aarch64--sm_121--cuda-130)).** §F additionally closes **§D.3's FP32↔FP64 numerical parity** (measured via the new `GpuCudaF32` back-end) and fixes the **CUDA-13 arch-matrix breakage** (sm_72 removed in CUDA 13). Still deferred: a true **Jetson Orin (sm_87)** crossover measurement (the GB10 is a strong ARM+Blackwell proxy but not Orin), **bf16** parity, the **Graphite build (§D.2)** + PyPose/MegBA borrows, and the **VPI-LDC Jetson PVA/VIC check (§D.4)**. See repo root `README.md` for the current capability matrix.
 
 ## Environment (this host)
 
@@ -91,7 +91,7 @@ Run on **2026-06-04** on a second host that *does* have a GPU + `nvcc` — closi
 | `cmake -DCMAKE_CUDA_ARCHITECTURES="72;80;86;87;89;90;90-virtual"` + `cmake --build` | ✅ full matrix compiles end-to-end (~26 s, 6 SASS targets + PTX). The earlier "multi-arch validated *syntactically*" caveat (§B) is now validated by a real device compile. |
 | Fatbin contents (`cuobjdump`) | ✅ carries `sm_72 / sm_80 / sm_86 / sm_87 / sm_89 / sm_90` SASS **plus `compute_90` PTX** |
 | Runs on `sm_120` via PTX JIT | ✅ the GPU code executes correctly on the RTX 5090 even though the toolkit emits **no** `sm_120` SASS — the driver JIT-compiles the embedded `compute_90` PTX forward onto Blackwell. **This is the load-bearing proof that `90-virtual` delivers forward-compat without driver SASS-compat.** |
-| Host-only degradation still clean | ✅ forcing `-DCMAKE_CUDA_COMPILER=NOTFOUND` configures `CUDA=OFF`, builds, and runs **114 tests** (the 8 CUDA-only cases compile out) — graceful degradation intact after the GPU work. |
+| Host-only degradation still clean | ✅ forcing `-DCMAKE_CUDA_COMPILER=NOTFOUND` configures `CUDA=OFF`, builds, and runs **114 tests** (the 8 CUDA-only cases compile out) — graceful degradation intact after the GPU work. *(Counts as of this §E commit; the suite has since grown — currently 122 host-only / 132 with the CUDA half, see §F / CLAUDE.md.)* |
 
 ### E.2 Native CUDA dense LM solver (#25) correctness — ✅
 
@@ -99,7 +99,7 @@ A from-scratch CalibForge GPU back-end (`solve/src/cuda_linear_solver.cu`) solve
 
 | Check (`tests/test_cuda_linear_solver.cpp`) | Result |
 |---|---|
-| Full suite | ✅ **122 / 122 pass** (114 host-only + 8 CUDA-only, incl. the `remap_cpu_gpu_parity` case) |
+| Full suite | ✅ **122 / 122 pass** (114 host-only + 8 CUDA-only, incl. the `remap_cpu_gpu_parity` case; suite size as of this §E commit — now 132 on a CUDA host, see §F) |
 | One GPU LM step vs host Eigen LDLT | ✅ relative error **< 1e-8** (FP64 round-off; cross-implementation, not bit-exact) |
 | Full `GpuCuda`-backend calibration vs `CpuCeres` | ✅ recovers identical intrinsics to **< 1e-5** |
 | Non-SPD damped matrix reported (so the LM loop damps harder) | ✅ `potrf` non-PD ⇒ `cudaSolveLmStep` returns false; the next, more-damped step succeeds (deterministic exact-zero-pivot test) |
@@ -123,3 +123,66 @@ Identical `DenseProblem` (a single pinhole camera, a 9×9 board, `n_views` poses
 - **Server GPU, not the edge target.** This is an RTX 5090 (server/desktop class). The **primary edge target is Jetson Orin (`sm_87`)**, where the crossover will sit at a *different* n_views — §D.3's edge↔server measurement is still pending and must be re-run there. Crossover is hardware-specific; the benchmark prints "MEASURED here, never assumed."
 - **Native back-end, not the borrows.** This measures CalibForge's own cuBLAS/cuSOLVER dense LM, *not* PyPose / Graphite / MegBA (§D.2 still pending). It is a *dense* solver; the sparse-Jacobian batched regime those borrows target is a separate measurement.
 - **Per-step allocation overhead is real.** `cudaSolveLmStep` currently `cudaMalloc`/`cudaFree`s its device buffers and re-uploads `J` every LM step; caching those across steps would lower the crossover. Recorded as future work, not yet done.
+
+## F. Second CUDA host — Grace-Blackwell GB10 (✅ run firsthand on aarch64 + sm_121 / CUDA 13.0)
+
+Run on **2026-06-05** on a **third host that is both edge-class and Blackwell-class**: an NVIDIA **GB10 "Grace-Blackwell"** (DGX Spark-class) — a **20-core ARM Cortex-X925 (aarch64) Grace CPU + a Blackwell GPU (`sm_121`, compute capability 12.1) sharing 121 GB of unified memory**, on **CUDA 13.0**. This is the closest proxy yet to the deferred Jetson target (ARM + integrated GPU + unified memory), and it closes two items §E could not: a **CUDA-13 toolkit** (which changed the supported arch set) and **FP32↔FP64 numerical parity** (§D.3) on real edge-class silicon.
+
+### Environment (this host)
+
+| Tool | Status |
+|---|---|
+| OS / arch | Linux **aarch64** (ARM Cortex-X925 "Grace", 20 cores) |
+| **GPU / `nvidia-smi`** | ✅ **NVIDIA GB10** — compute capability **`sm_121` (Blackwell)**, 121 GB unified memory |
+| **CUDA / `nvcc`** | ✅ **release 13.0, V13.0.88** |
+
+### F.1 CUDA 13 dropped sm_72 — the hardcoded arch matrix broke configure (now fixed) — ✅
+
+CUDA 13.0 **removes Volta/Xavier** (`sm_70`/`sm_72`): `nvcc -arch=compute_72` is now a **fatal** error, so the CUDA-12-era default matrix `72;80;86;87;89;90;90-virtual` failed `enable_language(CUDA)` outright on this host.
+
+| Check | Result |
+|---|---|
+| Default matrix configures on CUDA 13 (before fix) | ❌ `nvcc fatal: Unsupported gpu architecture 'compute_72'` — configure aborts |
+| Version-aware matrix (after fix) | ✅ `CMakeLists.txt` probes the nvcc version and **drops `sm_72` on CUDA ≥ 13** (keeps it on CUDA ≤ 12 for Xavier users); the default matrix configures cleanly → effective `80;86;87;89;90;90-virtual` |
+| Fatbin contents (`cuobjdump`) | ✅ native SASS for `sm_80 / sm_86 / sm_87 / sm_89 / sm_90` **plus `compute_90` PTX** |
+
+### F.2 Single-source multi-arch build runs on sm_121 via PTX JIT (RULE #6, again) — ✅
+
+Same forward-compat story as §E (RTX 5090 / sm_120) but on a **different toolkit (13.0) and a different Blackwell arch (sm_121)** — the `90-virtual` PTX tail JIT-forwards onto sm_121 with no native sm_121 SASS in the fatbin.
+
+| Check | Result |
+|---|---|
+| Full suite built with the DEFAULT matrix (tops out at `compute_90` PTX, **no** native sm_121) | ✅ **all 131 tests pass on the GB10 via PTX JIT** — the GPU dense solver + FP32 parity run on sm_121 through the JIT'd `compute_90` PTX |
+| Native build (`-DCMAKE_CUDA_ARCHITECTURES=native`, sm_121 SASS) | ✅ also 131/131 — both paths agree |
+
+### F.3 §D.3 — FP32 ↔ FP64 numerical parity (the deferred edge-precision question) — ✅ measured
+
+A native **FP32 GPU back-end** (`SolverBackend::GpuCudaF32` / `cudaSolveLmStepF32`) was added: it casts the host FP64 Jacobian/residual down to single precision, runs the entire damped solve (SYRK/GEMV/Cholesky) in FP32, and casts `dx` back up — so the parity test compares a *genuine* single-precision GPU solve against the FP64 GPU + host oracles. Measured on the GB10 (`tests/test_cuda_fp32_fp64_parity.cpp`):
+
+| Comparison (one well-conditioned LM step, m=64, n=10) | Relative error |
+|---|---|
+| GPU **FP64** vs host **FP64** (Eigen LDLT) | **3.1e-16** (machine precision) |
+| GPU **FP32** vs host **FP64** | **1.7e-07** (the single-precision envelope) |
+| GPU **FP32** vs host **FP32** (Eigen LDLT in float) | **1.2e-07** (the GPU FP32 path is a *correct* single-precision solve, not merely imprecise) |
+| **Full pinhole calibration** with FP32 GPU steps vs FP64 CPU oracle | recovers identical intrinsics (the LM loop evaluates + accepts steps in FP64, so single-precision step *directions* converge to the same FP64 minimum) |
+
+**Takeaway:** FP32 and FP64 AGREE to the single-precision round-off envelope (~1e-7) on a well-conditioned step, and an FP32-stepped *full calibration* lands on the same parameters as the FP64 oracle. The earlier "FP32/bf16 vs FP64 parity is unproven" caveat is now **measured** (bf16 remains future work). Caveat: FP32 degrades on *ill-conditioned* systems (`eps·cond` grows), so FP64 stays the default/accuracy oracle and FP32 is an explicit opt-in.
+
+### F.4 CPU-vs-GPU crossover on the GB10 — RULE #1 holds, crossover is FURTHER OUT than on the RTX 5090 — ✅
+
+Identical `DenseProblem` (single pinhole, 9×9 board, `n_views` poses), each backend, medians over 15 reps (≤10 views) / 5 reps (>10 views) — produced by the committed `tools/benchmark/calibforge_bench.cpp` on an optimized (`RelWithDebInfo`) build, which now times the FP32 (`SolverBackend::GpuCudaF32`) path too and emits the `gpu32_ms` column directly, so this table is reproducible from the tool:
+
+| n_views | n_tangent | cpu_ms | gpu64_ms | gpu32_ms | gpu64_speedup | winner |
+|---:|---:|---:|---:|---:|---:|:--|
+| 1 | 10 | 0.17 | 9.30 | 1.45 | 0.02× | CPU (~55×) |
+| 5 | 34 | 1.29 | 14.77 | 7.56 | 0.09× | CPU |
+| 10 | 64 | 3.65 | 16.10 | 8.47 | 0.23× | CPU |
+| 20 | 124 | 17.41 | 33.02 | 18.92 | 0.53× | CPU |
+| 40 | 244 | 107.00 | 74.85 | 46.69 | 1.43× | **GPU** |
+| 80 | 484 | 811.68 | 289.83 | 193.50 | 2.80× | **GPU** |
+
+> `gpu64_speedup = cpu_ms / gpu64_ms` (>1 ⇒ GPU faster). Both backends converge in the same #iterations to the same noise-free minimum on every row (verified by the harness's apples-to-apples cost guard), so the speedups compare equal work. Build matters: an unoptimized (`-O0`) build inflates the Eigen CPU solver ~30× and spuriously moves the crossover — always benchmark an optimized build.
+
+**Takeaway — RULE #1 validated on a *second, different* host, and the crossover MOVED.** On the RTX 5090 the GPU crossed over at ~8 views (§E.3); on the GB10 the **CPU wins through 20 views and the GPU only crosses over between 20 and 40** (gpu64 1.43× at 40, gpu32 already 0.92× at 20). The fast Grace ARM CPU + unified memory shifts the balance toward the CPU (and the per-step `cudaMalloc`/transfer overhead, §E caveat, is relatively larger here). This is exactly why the benchmark prints "crossover is hardware-specific, MEASURED here, never assumed" — two hosts, two crossovers. Note also **FP32 (`gpu32`) is consistently faster than FP64 (`gpu64`)** on the GPU (half the data + faster single-precision throughput), and is the first backend to overtake the CPU.
+
+**Still pending after §F:** a true **Jetson Orin (sm_87)** measurement (the GB10 is a strong ARM+Blackwell proxy but not Orin); the **PyPose / Graphite / MegBA** sparse/batched borrows (§D.2); **bf16** parity; and **real-dataset** (vs synthetic) wide-FOV B-spline validation.

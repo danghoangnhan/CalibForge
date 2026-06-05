@@ -43,6 +43,16 @@ inline bool cudaSolverAvailable() {
 // matches the host Eigen LDLT solve to FP64 round-off (cross-implementation, not bit-exact).
 bool cudaSolveLmStep(const double* J_colmajor, int m, int n, const double* r, double lambda,
                      double* delta_out);
+
+// FP32 variant of the same damped LM step: takes the SAME host FP64 J/r, casts to float, solves
+// entirely in single precision on the device, and casts dx back up to double in delta_out. Used
+// to MEASURE FP32-vs-FP64 numerical parity on real edge-class silicon (docs/SPIKES.md §D.3 / RULE
+// #6 — the FP32/bf16<->FP64 parity the project deferred as unproven). Same false-on-non-SPD/error
+// contract as cudaSolveLmStep; the result agrees with the FP64 solve only to single-precision
+// round-off (~1e-4 relative on well-conditioned systems), NOT bit-for-bit — that gap IS the
+// measurement.
+bool cudaSolveLmStepF32(const double* J_colmajor, int m, int n, const double* r, double lambda,
+                        double* delta_out);
 #endif
 
 }  // namespace calibforge

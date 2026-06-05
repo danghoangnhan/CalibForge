@@ -53,7 +53,23 @@ if(CMAKE_CUDA_COMPILER)
   # is the full matrix; a user-supplied -DCMAKE_CUDA_ARCHITECTURES on the command line is a
   # cache entry already DEFINED at this point and is therefore honored unchanged.
   if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    set(CMAKE_CUDA_ARCHITECTURES "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
+    # CUDA 13.0 REMOVED Volta/Xavier (sm_70/72): nvcc 13 rejects compute_72 with a FATAL error, so
+    # the hardcoded CUDA-12-era matrix above breaks configure on a CUDA-13 toolkit (observed on this
+    # Grace-Blackwell GB10 / CUDA 13.0 host). CMAKE_CUDA_COMPILER_VERSION isn't populated until
+    # enable_language(CUDA), and the matrix must be seeded BEFORE that (CMP0104) — so probe the
+    # nvcc version directly and filter sm_72 out on CUDA >= 13. The 90-virtual PTX tail is kept
+    # regardless for RULE #6 forward-compat (JITs onto Blackwell sm_120/sm_121, newer than the
+    # toolkit's native targets — validated on the GB10). Jetson Xavier (sm_72) users stay on CUDA 12.
+    set(_cf_arch "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
+    execute_process(COMMAND ${CMAKE_CUDA_COMPILER} --version
+                    OUTPUT_VARIABLE _cf_nvcc_ver ERROR_QUIET)
+    string(REGEX MATCH "release ([0-9]+)" _cf_unused "${_cf_nvcc_ver}")
+    if(CMAKE_MATCH_1 AND CMAKE_MATCH_1 GREATER_EQUAL 13)
+      list(REMOVE_ITEM _cf_arch "72")
+      message(STATUS "CalibForge: CUDA ${CMAKE_MATCH_1}.x -> sm_72 dropped from the arch matrix "
+                     "(Volta/Xavier removed in CUDA 13); matrix = ${_cf_arch}")
+    endif()
+    set(CMAKE_CUDA_ARCHITECTURES "${_cf_arch}")
   endif()
   enable_language(CUDA)
   find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
@@ -185,6 +201,7 @@ add_executable(calibforge_tests
   tests/test_kalibr_camchain.cpp
   tests/test_rolling_shutter.cpp
   tests/test_cam_imu.cpp
+  tests/test_cam_imu_full.cpp
   tests/test_imu_preintegrator.cpp
   tests/test_imu_preintegration_residual.cpp
   tests/test_online_calibration.cpp
@@ -195,8 +212,10 @@ add_executable(calibforge_tests
   tests/test_online_uav.cpp
   tests/test_online_surround_rig.cpp
   tests/test_generic_bspline_camera.cpp
+  tests/test_generic_bspline_calibrate.cpp
   tests/test_determinism.cpp
-  tests/test_cuda_linear_solver.cpp)
+  tests/test_cuda_linear_solver.cpp
+  tests/test_cuda_fp32_fp64_parity.cpp)
 target_link_libraries(calibforge_tests PRIVATE calibforge_core calibforge_eigen calibforge_sophus)
 target_include_directories(calibforge_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
 add_test(NAME calibforge_tests COMMAND calibforge_tests)

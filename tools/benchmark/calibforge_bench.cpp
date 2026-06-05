@@ -328,12 +328,17 @@ int main() {
   //     re-measure per target (Jetson Orin sm_87 etc.) — never assume. ---
 #ifdef CALIBFORGE_HAS_CUDA
   if (calibforge::cudaSolverAvailable()) {
-    solveDenseSingle(20, 9, 9, SolverBackend::GpuCuda, 0xC0FFEE);  // warm up CUDA ctx / JIT / handles
-    // Iteration counts are reported alongside the timings: a speedup is only meaningful if both
+    solveDenseSingle(20, 9, 9, SolverBackend::GpuCuda, 0xC0FFEE);     // warm up CUDA ctx / JIT / handles
+    solveDenseSingle(20, 9, 9, SolverBackend::GpuCudaF32, 0xC0FFEE);  // warm up the FP32 device path too
+    // Iteration counts are reported alongside the timings: a speedup is only meaningful if all
     // backends did the SAME amount of work (converged in ~the same #iterations to ~the same cost).
+    // gpu64 = SolverBackend::GpuCuda (FP64), gpu32 = SolverBackend::GpuCudaF32 (single-precision
+    // device step, FP64 cost/acceptance) — both vs the same CPU oracle, so the gpu32 column the
+    // docs report (docs/BENCHMARKS.md / SPIKES.md §F.4) is reproducible from this committed tool.
     std::printf(
-        "\nproblem,n_views,n_points,n_cams,n_tangent,cpu_ms_median,gpu_ms_median,gpu_speedup,"
-        "cpu_iters,gpu_iters,cpu_cost_median,gpu_cost_median\n");
+        "\nproblem,n_views,n_points,n_cams,n_tangent,cpu_ms_median,gpu64_ms_median,gpu32_ms_median,"
+        "gpu64_speedup,gpu32_speedup,cpu_iters,gpu64_iters,gpu32_iters,cpu_cost_median,"
+        "gpu64_cost_median,gpu32_cost_median\n");
     bool any_cost_divergence = false;
     for (int v : {1, 2, 3, 5, 8, 10, 20, 40, 80}) {
       // More reps where each solve is cheap (the small regime that pins the crossover, and where
@@ -343,10 +348,14 @@ int main() {
           repeat(reps, [&]() { return solveDenseSingle(v, 9, 9, SolverBackend::CpuCeres, 0xC0FFEE); });
       const Timing tg =
           repeat(reps, [&]() { return solveDenseSingle(v, 9, 9, SolverBackend::GpuCuda, 0xC0FFEE); });
+      const Timing tg32 = repeat(
+          reps, [&]() { return solveDenseSingle(v, 9, 9, SolverBackend::GpuCudaF32, 0xC0FFEE); });
       const double speedup = tc.median_ms / std::max(tg.median_ms, 1e-9);
-      std::printf("dense_single,%d,%d,1,%d,%.3f,%.3f,%.2f,%d,%d,%.3e,%.3e\n", v, 9 * 9, 4 + 6 * v,
-                  tc.median_ms, tg.median_ms, speedup, tc.median_iters, tg.median_iters,
-                  tc.median_final_cost, tg.median_final_cost);
+      const double speedup32 = tc.median_ms / std::max(tg32.median_ms, 1e-9);
+      std::printf("dense_single,%d,%d,1,%d,%.3f,%.3f,%.3f,%.2f,%.2f,%d,%d,%d,%.3e,%.3e,%.3e\n", v,
+                  9 * 9, 4 + 6 * v, tc.median_ms, tg.median_ms, tg32.median_ms, speedup, speedup32,
+                  tc.median_iters, tg.median_iters, tg32.median_iters, tc.median_final_cost,
+                  tg.median_final_cost, tg32.median_final_cost);
       // A speedup is apples-to-apples only if BOTH backends reach the same minimum. The scenes are
       // noise-free, so a correct solve drives final_cost to ~0 (machine precision, ~1e-23); the
       // meaningful check is "did both converge to the noise-free minimum?", NOT a relative cost
@@ -354,14 +363,15 @@ int main() {
       // only if either backend's cost stays above a generous convergence floor — that would mean
       // one solver failed to converge while the other succeeded, invalidating the speedup (RULE #1:
       // precision != correctness; never report a speedup between non-equivalent solves).
-      const double worst_cost = std::max(tc.median_final_cost, tg.median_final_cost);
+      const double worst_cost = std::max(
+          tc.median_final_cost, std::max(tg.median_final_cost, tg32.median_final_cost));
       if (worst_cost > 1e-6) {
         any_cost_divergence = true;
         std::fprintf(stderr,
                      "  WARNING dense_single n_views=%d: a backend did not reach the noise-free "
-                     "minimum (cpu=%.3e gpu=%.3e) — the gpu_speedup for this row is NOT "
+                     "minimum (cpu=%.3e gpu64=%.3e gpu32=%.3e) — the speedup for this row is NOT "
                      "apples-to-apples.\n",
-                     v, tc.median_final_cost, tg.median_final_cost);
+                     v, tc.median_final_cost, tg.median_final_cost, tg32.median_final_cost);
       }
     }
     if (!any_cost_divergence)

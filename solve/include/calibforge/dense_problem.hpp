@@ -60,7 +60,9 @@ class DenseProblem : public Problem {
   // GPU (cuBLAS/cuSOLVER) when available, else transparently falls back to the host path.
   LmSummary solveLm(const LmOptions& opts = LmOptions{},
                     SolverBackend backend = SolverBackend::CpuCeres) {
-    const bool use_gpu = (backend == SolverBackend::GpuCuda) && cudaSolverAvailable();
+    const bool use_gpu_f32 = (backend == SolverBackend::GpuCudaF32) && cudaSolverAvailable();
+    const bool use_gpu =
+        ((backend == SolverBackend::GpuCuda) || use_gpu_f32) && cudaSolverAvailable();
     // Tangent-column offsets for non-constant blocks; row offsets for residuals.
     int n = 0;
     for (auto& b : blocks_) {
@@ -90,11 +92,23 @@ class DenseProblem : public Problem {
 
     LmSummary s;
     s.initial_cost = cost;
+    // Initial gradient magnitude for the scale-invariant relative-gradient stop (see LmOptions::
+    // relative_gradient_tolerance): the absolute ||J^T r|| test alone is not portable at the noise
+    // floor, where a bit-correct solution can report converged=false on one arch and true on
+    // another. Gauging relative to ||J^T r_0|| makes the flag deterministic edge<->server.
+    const double g0_norm = (J.transpose() * r).norm();
     double lambda = opts.initial_lambda;
     int it = 0;
     for (; it < opts.max_iterations; ++it) {
       const Eigen::VectorXd g = J.transpose() * r;
-      if (g.norm() < opts.gradient_tolerance) { s.converged = true; break; }
+      const double g_norm = g.norm();
+      if (g_norm < opts.gradient_tolerance ||
+          g_norm <= opts.relative_gradient_tolerance * g0_norm) {
+        s.converged = true;
+        break;  // converged at the TOP, before this iteration attempts a step => it did no work,
+                // so it is intentionally NOT counted (the post-step exits below ++it because they
+                // attempted/took a step). s.iterations == #iterations that actually ran a step.
+      }
       // J^T J is only needed for the HOST damped solve; the GPU path forms it on the device.
       Eigen::MatrixXd JtJ;
       if (!use_gpu) JtJ = J.transpose() * J;
@@ -104,9 +118,14 @@ class DenseProblem : public Problem {
         Eigen::VectorXd dx;
         if (use_gpu) {
 #ifdef CALIBFORGE_HAS_CUDA
-          // (J^T J + lambda diag(J^T J)) dx = -J^T r solved on the GPU (cuBLAS + cuSOLVER).
+          // (J^T J + lambda diag(J^T J)) dx = -J^T r solved on the GPU (cuBLAS + cuSOLVER), in
+          // FP64 (GpuCuda) or single precision (GpuCudaF32, the edge-precision parity path).
           dx.resize(n_tangent_);
-          if (!cudaSolveLmStep(J.data(), m_, n_tangent_, r.data(), lambda, dx.data())) {
+          const bool step_ok =
+              use_gpu_f32
+                  ? cudaSolveLmStepF32(J.data(), m_, n_tangent_, r.data(), lambda, dx.data())
+                  : cudaSolveLmStep(J.data(), m_, n_tangent_, r.data(), lambda, dx.data());
+          if (!step_ok) {
             lambda *= 3.0;  // damped matrix not SPD on device: damp harder, retry (host reject path)
             continue;
           }
@@ -157,7 +176,18 @@ class DenseProblem : public Problem {
       }
 
       if (s.converged) { ++it; break; }
-      if (!step_accepted) break;  // could not decrease even with heavy damping
+      if (!step_accepted) {
+        // Trust region collapsed: no damped Gauss-Newton step reduces the cost. For a problem
+        // that has DESCENDED from its start this is a local minimum to numerical precision (LM
+        // -> gradient descent as lambda grows; if even a heavily-damped step can't lower the
+        // cost, we are at a stationary point) -> report convergence, not failure. Reaching
+        // max_iterations stays the only "ran out of budget" non-converged exit. This de-
+        // fragilizes the flag for rank-deficient models (the generic B-spline's gauge null
+        // space) and across arches, same motivation as relative_gradient_tolerance.
+        if (cost < s.initial_cost) s.converged = true;
+        ++it;
+        break;
+      }
     }
     s.iterations = it;
     s.final_cost = cost;
