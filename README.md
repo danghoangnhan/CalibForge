@@ -2,7 +2,7 @@
 
 **A unified, NVIDIA-accelerated geometric camera-calibration library that both *estimates* and *applies* calibration across pinhole, fisheye, and generic models — built once, deployed on both edge (Jetson) and server.**
 
-> **Status:** v0.5 in progress, with v1.0 GPU work landing. The CPU calibration core, the observability-gated online tracker (the project differentiator), the IMU preintegration factor, the runtime undistort path, and the generic per-pixel B-spline model (CPU, header-only) are implemented and tested. A **native CUDA dense LM solver back-end (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER) is implemented and validated firsthand on an RTX 5090 (sm_120) host** — the CPU-vs-GPU calibration-regime crossover is now measured (see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)), not assumed. Still pending: the PyPose/Graphite/MegBA borrows, the Jetson↔server numerical-parity test, and the B-spline model's pipeline wiring + wide-FOV validation.
+> **Status:** v0.5 in progress, with v1.0 GPU work landing. The CPU calibration core, the observability-gated online tracker (the project differentiator), the full Forster IMU preintegration factor **now wired into a complete cam-IMU pipeline that estimates the spatial translation extrinsic + biases + gravity** (`calibrate_cam_imu_full`), the runtime undistort path, and the generic per-pixel B-spline model — **now wired into a calibration pipeline + io + Python bindings and validated against wide-FOV double-sphere / Kannala–Brandt fisheye sources** (sub-pixel) — are implemented and tested (131 C++ tests). A **native CUDA dense LM solver back-end (`SolverBackend::GpuCuda`, cuBLAS/cuSOLVER)** is validated firsthand on **two** GPU hosts: an RTX 5090 (sm_120 / CUDA 12.0) and a **Grace-Blackwell GB10 (aarch64 + sm_121 / CUDA 13.0)** — the latter an edge-class ARM + Blackwell host where **FP32↔FP64 numerical parity is now measured** (an FP32 GPU back-end, `SolverBackend::GpuCudaF32`, agrees with the FP64 oracle to the single-precision envelope) and the single-source multi-arch build runs on sm_121 via `compute_90` PTX JIT. The CPU-vs-GPU calibration-regime crossover is measured (see [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md)), not assumed. Still pending: the PyPose/Graphite/MegBA sparse/batched borrows, and a Jetson Orin (sm_87) re-measurement of the crossover + real-dataset (vs synthetic) wide-FOV validation.
 
 ## Why it exists
 
@@ -15,10 +15,11 @@ Every building block of geometric calibration is public, but **no single library
 | Pinhole · Brown–Conrady distortion | ✅ | ✅ |
 | Kannala–Brandt fisheye | ✅ | ✅ |
 | Double-sphere · EUCM (the nvTorchCam gap) | ✅ | ✅ |
-| Generic / per-pixel B-spline model | — | ⏳ |
+| Generic / per-pixel B-spline model (model + pipeline + io + Python; wide-FOV validated) | — | ✅ |
 | Single-cam extrinsics (PnP) · Stereo + rectification | ✅ | ✅ |
 | Multi-camera rig · Hand-eye | ✅ | ✅ |
 | Camera–IMU rotation init + full Forster preintegration factor | ✅ | ✅ |
+| Full cam–IMU pipeline: spatial translation extrinsic + bias + gravity (`calibrate_cam_imu_full`) | — | ✅ |
 | Rolling-shutter calibration | ✅ | ✅ |
 | Online intrinsic + extrinsic recalibration behind the observability gate | ✅ | ✅ |
 | Targetless feature tracker | ✅ | ✅ |
@@ -28,8 +29,10 @@ Every building block of geometric calibration is public, but **no single library
 | ROS `CameraInfo` · Isaac Perceptor URDF · OpenCV YAML · Kalibr camchain | ✅ | ✅ |
 | Python bindings (pybind11) · ROS2 node | ✅ | ✅ |
 | Native CUDA dense LM solver back-end (cuBLAS SYRK/GEMV + cuSOLVER Cholesky) | — | ✅ |
+| FP32 GPU solver back-end (`GpuCudaF32`) + FP32↔FP64 parity measured (RTX 5090 + GB10) | — | ✅ |
+| Single-source multi-arch build runs on sm_120 / sm_121 via PTX JIT (CUDA 12.0 + 13.0) | — | ✅ |
 | GPU solver borrows — PyPose (batched/sparse) · Graphite (edge/bf16) · MegBA (server) | — | ⏳ |
-| Edge↔server numerical-parity test (FP32/bf16 vs FP64; Jetson vs server) | — | ⏳ |
+| Jetson Orin (sm_87) crossover re-measurement · real-dataset wide-FOV validation | — | ⏳ |
 
 Scope is strictly **geometric** (no photometric / color / structured-light).
 
@@ -57,10 +60,15 @@ CLAUDE.md           Architecture + the non-obvious rules that govern the code
 CUDA toolkit optional — the build degrades gracefully to a host-only configuration when `nvcc` is absent (CI runs this way). Multi-arch single source for the CUDA half:
 
 ```bash
-# Omit -DCMAKE_CUDA_ARCHITECTURES to use the default matrix (72;80;86;87;89;90;90-virtual).
-# The trailing 90-virtual embeds compute_90 PTX that JIT-forwards onto newer archs such as
-# sm_120 / Blackwell on a CUDA 12.0 toolkit (validated on an RTX 5090 — docs/SPIKES.md §E).
-cmake -S . -B build -G Ninja -DCMAKE_CUDA_ARCHITECTURES="72;80;86;87;89;90;90-virtual"
+# Leave CMAKE_CUDA_ARCHITECTURES unset to use the default matrix (72;80;86;87;89;90;90-virtual).
+# On a CUDA >= 13 toolkit, sm_72 (Volta/Xavier, removed in CUDA 13) is dropped AUTOMATICALLY at
+# configure time so the default matrix still configures — validated on a Grace-Blackwell GB10 /
+# CUDA 13.0 host (docs/SPIKES.md §F). NOTE: that auto-drop fires ONLY for the default matrix; an
+# EXPLICIT -DCMAKE_CUDA_ARCHITECTURES that lists 72 bypasses it and nvcc 13 aborts — so on CUDA 13
+# either omit the flag (below) or pass a matrix WITHOUT 72. The trailing 90-virtual embeds compute_90
+# PTX that JIT-forwards onto archs newer than the toolkit — sm_120 (RTX 5090, CUDA 12.0) and sm_121
+# (GB10, CUDA 13.0) both run the same single source via the PTX JIT (docs/SPIKES.md §E, §F).
+cmake -S . -B build              # default multi-arch matrix (sm_72 auto-dropped on CUDA >= 13)
 cmake --build build -j
 ctest --test-dir build --output-on-failure
 ```

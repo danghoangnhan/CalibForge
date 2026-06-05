@@ -14,9 +14,12 @@
 #include <pybind11/stl.h>
 
 #include "calibforge/brown_conrady_camera.hpp"
+#include "calibforge/calibrate_generic_bspline.hpp"
 #include "calibforge/calibrate_single.hpp"
 #include "calibforge/double_sphere_camera.hpp"
 #include "calibforge/eucm_camera.hpp"
+#include "calibforge/generic_bspline_camera.hpp"
+#include "calibforge/generic_bspline_yaml.hpp"
 #include "calibforge/kannala_brandt_camera.hpp"
 #include "calibforge/observability.hpp"
 #include "calibforge/pinhole_camera.hpp"
@@ -88,6 +91,39 @@ PYBIND11_MODULE(calibforge, m) {
                 .def("project_valid", &EUCMCamera::projectValid);
   addCameraMethods<EUCMCamera>(eu);
 
+  // Generic per-pixel B-spline model (Schöps CVPR 2020): the control GRID + the dense ray field.
+  py::class_<GenericBSplineGrid>(m, "GenericBSplineGrid")
+      .def(py::init<>())
+      .def_readwrite("nx", &GenericBSplineGrid::nx)
+      .def_readwrite("ny", &GenericBSplineGrid::ny)
+      .def_readwrite("image_w", &GenericBSplineGrid::image_w)
+      .def_readwrite("image_h", &GenericBSplineGrid::image_h)
+      .def_readwrite("margin", &GenericBSplineGrid::margin);
+
+  auto gb = py::class_<GenericBSplineCamera>(m, "GenericBSplineCamera")
+                .def(py::init<const GenericBSplineGrid&>())
+                .def("grid", &GenericBSplineCamera::grid)
+                .def("params", &GenericBSplineCamera::params)
+                .def("set_params", &GenericBSplineCamera::setParams)
+                .def("fit_from_parametric",
+                     [](GenericBSplineCamera& cam, const std::string& model,
+                        const std::vector<double>& q) {
+                       const std::unique_ptr<CameraModel> src = factoryFor(model)(
+                           Eigen::Map<const Eigen::VectorXd>(
+                               q.data(), static_cast<Eigen::Index>(q.size())));
+                       cam.fitFromParametricCamera(*src);
+                     },
+                     py::arg("model"), py::arg("intrinsics"));
+  addCameraMethods<GenericBSplineCamera>(gb);
+
+  // B-spline YAML serialization (round-trips the grid + control points).
+  m.def("generic_bspline_to_yaml", [](const GenericBSplineCamera& cam) {
+    return io::toGenericBSplineYaml(io::toGenericBSplineIntrinsics(cam));
+  });
+  m.def("generic_bspline_from_yaml", [](const std::string& text) {
+    return io::fromGenericBSplineIntrinsics(io::parseGenericBSplineYaml(text));
+  });
+
   py::class_<ObservabilityReport>(m, "ObservabilityReport")
       .def_readonly("observable", &ObservabilityReport::observable)
       .def_readonly("confidence", &ObservabilityReport::confidence)
@@ -141,4 +177,43 @@ PYBIND11_MODULE(calibforge, m) {
       },
       py::arg("model"), py::arg("object_points"), py::arg("image_points"),
       py::arg("intrinsics_init"), py::arg("poses_init"), py::arg("max_iter") = 100);
+
+  // Generic B-spline calibration: fit the control grid to a parametric source, then refine
+  // against observations. `optimize_poses=false` does the functional fit (poses known).
+  m.def(
+      "calibrate_generic_bspline",
+      [](const GenericBSplineGrid& grid, const std::string& init_model,
+         const std::vector<double>& init_intrinsics,
+         const std::vector<std::vector<std::array<double, 3>>>& object_points,
+         const std::vector<std::vector<std::array<double, 2>>>& image_points,
+         const std::vector<Eigen::Matrix4d>& poses_init, int max_iter, bool optimize_poses) {
+        std::vector<View> views;
+        for (std::size_t i = 0; i < object_points.size(); ++i) {
+          View v;
+          v.object_points = object_points[i];
+          v.image_points = image_points[i];
+          views.push_back(v);
+        }
+        const std::unique_ptr<CameraModel> src = factoryFor(init_model)(
+            Eigen::Map<const Eigen::VectorXd>(init_intrinsics.data(),
+                                              static_cast<Eigen::Index>(init_intrinsics.size())));
+        const std::vector<double> control_init = makeGenericBSplineInit(grid, *src);
+        std::vector<Sophus::SE3d> poses;
+        for (const auto& P : poses_init) poses.push_back(Sophus::SE3d(P));
+        GenericBSplineCalibrateOptions opts;
+        opts.lm.max_iterations = max_iter;
+        opts.optimize_poses = optimize_poses;
+        GenericBSplineResult res = calibrateGenericBSpline(views, grid, control_init, poses, opts);
+
+        py::dict d;
+        d["control_points"] = res.control_points;
+        d["final_cost"] = res.summary.final_cost;
+        d["converged"] = res.summary.converged;
+        d["num_residuals"] = res.num_residuals;
+        d["rms_reprojection_px"] = res.rms_reprojection_px;
+        return d;
+      },
+      py::arg("grid"), py::arg("init_model"), py::arg("init_intrinsics"),
+      py::arg("object_points"), py::arg("image_points"), py::arg("poses_init"),
+      py::arg("max_iter") = 100, py::arg("optimize_poses") = true);
 }

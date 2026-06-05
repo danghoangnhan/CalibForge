@@ -23,6 +23,9 @@ enum class SolverBackend {
   CpuCeres,     // BSD; fastest on small single problems; also the accuracy oracle
   GpuCuda,      // native CalibForge CUDA dense LM (cuBLAS SYRK/GEMV + cuSOLVER Cholesky); built
                 // when CALIBFORGE_HAS_CUDA, falls back to CPU otherwise. See cuda_linear_solver.hpp.
+  GpuCudaF32,   // same native CUDA back-end but the per-step damped solve runs in SINGLE precision
+                // (edge-class FP32). Used to MEASURE FP32<->FP64 numerical parity (RULE #6);
+                // falls back to the CPU FP64 path when CUDA is absent.
   GpuPyPose,    // Apache-2.0; sparse-Jacobian LM + FastTriggs; batched/online (not yet wired)
   GpuGraphite,  // MIT (WIP); implicit-Schur + bf16; edge / low-VRAM (not yet wired)
 };

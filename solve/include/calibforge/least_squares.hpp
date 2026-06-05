@@ -48,7 +48,16 @@ inline double robustWeightSqrt(const RobustLoss& loss, double s) {
 struct LmOptions {
   int max_iterations = 100;
   double function_tolerance = 1e-12;   // stop when relative cost decrease < this
-  double gradient_tolerance = 1e-12;   // stop when ||J^T r|| < this
+  double gradient_tolerance = 1e-12;   // stop when ||J^T r|| < this (ABSOLUTE)
+  // Scale-INVARIANT gradient stop: converge when ||J^T r|| <= this * ||J^T r_0||. An absolute
+  // gradient tolerance is not platform-portable at the noise floor: a well-conditioned solve can
+  // bottom out at cost ~1e-25 with ||J^T r|| still ~5e-10 (> 1e-12) while the gradient has in fact
+  // dropped ~15 orders from its start. Whether the absolute test then trips depends on 1-ULP
+  // trajectory differences across compilers/architectures (observed: an x86_64 build flagged this
+  // converged, the aarch64 build stopped one iteration earlier via trust-region collapse and
+  // reported converged=false on a bit-for-bit-correct solution). Gauging the gradient relative to
+  // its initial magnitude makes the converged flag deterministic across edge<->server (RULE #6).
+  double relative_gradient_tolerance = 1e-10;
   double parameter_tolerance = 1e-10;  // stop when ||dx|| < this*(||x||+this)
   double initial_lambda = 1e-3;
   RobustLoss robust = {};              // default None => plain least squares (unchanged)
@@ -78,14 +87,19 @@ inline LmSummary solveLevenbergMarquardt(const ResidualFn& fn,
   double cost = 0.5 * r.squaredNorm();
   s.initial_cost = cost;
 
+  const double g0_norm = (J.transpose() * r).norm();  // initial gradient scale (relative stop)
   double lambda = opts.initial_lambda;
   int it = 0;
   for (; it < opts.max_iterations; ++it) {
     const MatrixXd JtJ = J.transpose() * J;
     const VectorXd g = J.transpose() * r;  // gradient
-    if (g.norm() < opts.gradient_tolerance) {
+    const double g_norm = g.norm();
+    if (g_norm < opts.gradient_tolerance ||
+        g_norm <= opts.relative_gradient_tolerance * g0_norm) {
       s.converged = true;
-      break;
+      break;  // converged at the TOP, before attempting a step => this iteration did no work and
+              // is intentionally NOT counted (the post-step exits below ++it). s.iterations is the
+              // number of iterations that actually ran a step.
     }
 
     bool step_accepted = false;
@@ -121,7 +135,14 @@ inline LmSummary solveLevenbergMarquardt(const ResidualFn& fn,
       ++it;
       break;
     }
-    if (!step_accepted) break;  // could not decrease cost even with heavy damping
+    if (!step_accepted) {
+      // Trust region collapsed at a point we descended to: a local minimum to numerical
+      // precision (see DenseProblem::solveLm) -> converged, not failure. Only max_iterations
+      // counts as ran-out-of-budget non-convergence.
+      if (cost < s.initial_cost) s.converged = true;
+      ++it;
+      break;
+    }
   }
 
   s.iterations = it;
