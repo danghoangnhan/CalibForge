@@ -44,47 +44,66 @@ set(CALIBFORGE_CUDA_ARCH_DEFAULT "72;80;86;87;89;90;90-virtual"
 include(CheckLanguage)
 check_language(CUDA)
 if(CMAKE_CUDA_COMPILER)
-  # Seed the multi-arch matrix BEFORE enable_language(CUDA). Under policy CMP0104 (NEW since
-  # CMake 3.18; this project requires 3.24) enable_language(CUDA) INITIALIZES
-  # CMAKE_CUDA_ARCHITECTURES to the build host's native arch when it is unset — so a
-  # "if(NOT DEFINED ...)" guard placed AFTER it is always false, silently dropping the matrix
-  # and building host-native ONLY (e.g. sm_52 on a dev box), violating RULE #6 (one source,
-  # many arches: Jetson sm_87 + server sm_80/90 in a single build). Set it here so the default
-  # is the full matrix; a user-supplied -DCMAKE_CUDA_ARCHITECTURES on the command line is a
-  # cache entry already DEFINED at this point and is therefore honored unchanged.
-  if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-    # CUDA 13.0 REMOVED Volta/Xavier (sm_70/72): nvcc 13 rejects compute_72 with a FATAL error, so
-    # the hardcoded CUDA-12-era matrix above breaks configure on a CUDA-13 toolkit (observed on this
-    # Grace-Blackwell GB10 / CUDA 13.0 host). CMAKE_CUDA_COMPILER_VERSION isn't populated until
-    # enable_language(CUDA), and the matrix must be seeded BEFORE that (CMP0104) — so probe the
-    # nvcc version directly and filter sm_72 out on CUDA >= 13. The 90-virtual PTX tail is kept
-    # regardless for RULE #6 forward-compat (JITs onto Blackwell sm_120/sm_121, newer than the
-    # toolkit's native targets — validated on the GB10). Jetson Xavier (sm_72) users stay on CUDA 12.
-    set(_cf_arch "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
-    execute_process(COMMAND ${CMAKE_CUDA_COMPILER} --version
-                    OUTPUT_VARIABLE _cf_nvcc_ver ERROR_QUIET)
-    string(REGEX MATCH "release ([0-9]+)" _cf_unused "${_cf_nvcc_ver}")
-    if(CMAKE_MATCH_1 AND CMAKE_MATCH_1 GREATER_EQUAL 13)
-      list(REMOVE_ITEM _cf_arch "72")
-      message(STATUS "CalibForge: CUDA ${CMAKE_MATCH_1}.x -> sm_72 dropped from the arch matrix "
-                     "(Volta/Xavier removed in CUDA 13); matrix = ${_cf_arch}")
-    endif()
-    set(CMAKE_CUDA_ARCHITECTURES "${_cf_arch}")
-  endif()
-  enable_language(CUDA)
-  find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
-  set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
-  option(CALIBFORGE_CUDA_DEBUG "Build CUDA with -G device debug (else -lineinfo)" OFF)
-  if(CALIBFORGE_CUDA_DEBUG)
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G")
+  # Probe the nvcc MAJOR version UP FRONT. CMAKE_CUDA_COMPILER_VERSION isn't populated until
+  # enable_language(CUDA), but we need the version BEFORE that both to seed the arch matrix
+  # (CMP0104, below) and to bail out cleanly on a toolkit too old for this project's matrix.
+  execute_process(COMMAND ${CMAKE_CUDA_COMPILER} --version
+                  OUTPUT_VARIABLE _cf_nvcc_ver ERROR_QUIET)
+  string(REGEX MATCH "release ([0-9]+)" _cf_unused "${_cf_nvcc_ver}")
+  set(_cf_cuda_major "${CMAKE_MATCH_1}")
+
+  if(_cf_cuda_major AND _cf_cuda_major LESS 11)
+    # JetPack 4 / Jetson Nano cap out at CUDA 10.2: it predates sm_80+ and compute_90 PTX and lacks
+    # full C++17 DEVICE support (cuda_std_17), so the multi-arch matrix would FATAL at
+    # enable_language(CUDA). Degrade to HOST-ONLY instead of failing the whole configure — the CPU
+    # calibration core + undistort + VPI-LDC export build fine with the (older) host compiler, and
+    # on a Maxwell-class Nano the CPU is the right path anyway (RULE #1). The GPU back-end needs
+    # CUDA >= 11 (Jetson Orin sm_87 / server).
+    set(CALIBFORGE_HAS_CUDA OFF)
+    message(WARNING
+      "CalibForge: CUDA ${_cf_cuda_major}.x is older than 11 (e.g. JetPack 4 / Jetson Nano ships "
+      "CUDA 10.2) -> configuring HOST-ONLY. The GPU half needs CUDA >= 11 for the sm_80+/compute_90 "
+      "matrix + C++17 device code; the CPU core, undistort, and VPI-LDC export still build. Use a "
+      "CUDA >= 11 toolkit (Jetson Orin / server) for the GPU back-end.")
   else()
-    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
+    # Seed the multi-arch matrix BEFORE enable_language(CUDA). Under policy CMP0104 (NEW since
+    # CMake 3.18; this project requires 3.24) enable_language(CUDA) INITIALIZES
+    # CMAKE_CUDA_ARCHITECTURES to the build host's native arch when it is unset — so a
+    # "if(NOT DEFINED ...)" guard placed AFTER it is always false, silently dropping the matrix
+    # and building host-native ONLY (e.g. sm_52 on a dev box), violating RULE #6 (one source,
+    # many arches: Jetson sm_87 + server sm_80/90 in a single build). Set it here so the default
+    # is the full matrix; a user-supplied -DCMAKE_CUDA_ARCHITECTURES on the command line is a
+    # cache entry already DEFINED at this point and is therefore honored unchanged.
+    if(NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+      # CUDA 13.0 REMOVED Volta/Xavier (sm_70/72): nvcc 13 rejects compute_72 with a FATAL error, so
+      # the hardcoded CUDA-12-era matrix above breaks configure on a CUDA-13 toolkit (observed on
+      # this Grace-Blackwell GB10 / CUDA 13.0 host). Filter sm_72 out on CUDA >= 13; keep the
+      # 90-virtual PTX tail regardless for RULE #6 forward-compat (JITs onto Blackwell sm_120/sm_121,
+      # newer than the toolkit's native targets — validated on the GB10). Jetson Xavier (sm_72)
+      # users stay on CUDA 12.
+      set(_cf_arch "${CALIBFORGE_CUDA_ARCH_DEFAULT}")
+      if(_cf_cuda_major AND _cf_cuda_major GREATER_EQUAL 13)
+        list(REMOVE_ITEM _cf_arch "72")
+        message(STATUS "CalibForge: CUDA ${_cf_cuda_major}.x -> sm_72 dropped from the arch matrix "
+                       "(Volta/Xavier removed in CUDA 13); matrix = ${_cf_arch}")
+      endif()
+      set(CMAKE_CUDA_ARCHITECTURES "${_cf_arch}")
+    endif()
+    enable_language(CUDA)
+    find_package(CUDAToolkit)  # provides CUDA::cudart etc. (cuda-samples template convention)
+    set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -Wno-deprecated-gpu-targets")
+    option(CALIBFORGE_CUDA_DEBUG "Build CUDA with -G device debug (else -lineinfo)" OFF)
+    if(CALIBFORGE_CUDA_DEBUG)
+      set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -G")
+    else()
+      set(CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS} -lineinfo")
+    endif()
+    set(CALIBFORGE_HAS_CUDA ON)
+    message(STATUS "CalibForge: CUDA found -> building GPU targets for sm_{${CMAKE_CUDA_ARCHITECTURES}}")
+    # Trivial probe TU: proves the arch matrix compiles end-to-end on a CUDA host.
+    add_executable(calibforge_arch_probe src/arch_probe.cu)
+    set_target_properties(calibforge_arch_probe PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
   endif()
-  set(CALIBFORGE_HAS_CUDA ON)
-  message(STATUS "CalibForge: CUDA found -> building GPU targets for sm_{${CMAKE_CUDA_ARCHITECTURES}}")
-  # Trivial probe TU: proves the arch matrix compiles end-to-end on a CUDA host.
-  add_executable(calibforge_arch_probe src/arch_probe.cu)
-  set_target_properties(calibforge_arch_probe PROPERTIES CUDA_SEPARABLE_COMPILATION ON)
 else()
   set(CALIBFORGE_HAS_CUDA OFF)
   message(WARNING

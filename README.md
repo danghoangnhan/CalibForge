@@ -86,6 +86,16 @@ Optional flags:
 - `-DCALIBFORGE_PYTHON=ON` — build the Python bindings.
 - `-DCALIBFORGE_WERROR=ON` — strict warnings (matches the `strict` CI job).
 
+### Jetson notes (edge)
+
+- **Jetson Orin (`sm_87`, JetPack 5/6, CUDA ≥ 11)** is the intended edge target — it's already in the default arch matrix, so a normal `cmake -S . -B build` builds the GPU half.
+- **Jetson Nano / JetPack 4 (CUDA 10.2)** builds **host-only**: CUDA 10.2 predates `sm_80+`/`compute_90` and lacks C++17 device support, so CMake detects CUDA < 11 and auto-skips the GPU half (the CPU calibration core, undistort, and VPI-LDC export still build). JetPack 4 ships CMake 3.10, so install a newer one first (the project needs **CMake ≥ 3.24**):
+  ```bash
+  pip3 install --user "cmake>=3.24"      # or the Kitware apt repo
+  cmake -S . -B build && cmake --build build -j && ctest --test-dir build
+  ```
+  If gcc 7.5 (JetPack 4 default) trips on a C++17 corner, `sudo apt install g++-8` and pass `-DCMAKE_CXX_COMPILER=g++-8`.
+
 ## Design at a glance
 
 - **Camera-model core** — adopts the nvTorchCam interface design (Apache-2.0); adds double-sphere & EUCM that nvTorchCam / Kornia / PyTorch3D do not ship. Analytic Jacobians on hot paths (FD-validated in tests).
